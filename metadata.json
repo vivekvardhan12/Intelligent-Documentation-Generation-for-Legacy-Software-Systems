@@ -1,0 +1,6 @@
+{
+  "name": "CodeDoc Context Isolator",
+  "description": "Scientific benchmark isolating whether docstring improvements stem from context content or raw token length under fixed token budgets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
