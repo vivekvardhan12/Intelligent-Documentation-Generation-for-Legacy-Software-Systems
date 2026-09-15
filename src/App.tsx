@@ -1,325 +1,122 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { BenchmarkTarget, ConditionPromptPayload, ConditionResult, ContextCondition, ExperimentRun } from './types';
+/**
+ * Application root — owns run parameters, run execution and run history.
+ *
+ * WHAT CHANGED AND WHY
+ *
+ * 1. NO SEEDED FAKE RESULTS. The old component opened with ~290 lines of
+ *    hand-authored docstrings and scores installed directly into live state,
+ *    presented exactly like measured results. The app now starts empty and the
+ *    sample dataset is opt-in and badged (see `src/data/demoSession.ts`).
+ *
+ * 2. TRIALS ARE CONFIGURABLE. `numTrials: 1` was hardwired at the call site,
+ *    so the entire statistical layer — paired t-tests, Wilcoxon, Holm
+ *    correction — could never produce a result, and every verdict rested on a
+ *    single observation.
+ *
+ * 3. FAILURES ARE VISIBLE. A failed run was `console.error` and nothing else:
+ *    the spinner stopped, stale results stayed on screen, and the user had no
+ *    way to know. Errors now raise toasts carrying the server's own message.
+ *
+ * 4. RUNS ARE CANCELLABLE AND PERSISTED. An AbortController is threaded through
+ *    every request, and history survives a page reload via localStorage.
+ *
+ * 5. THE CHART VIEWS ARE LAZY. Recharts is a large dependency rendered below
+ *    the fold; it is now code-split so it does not block first paint.
+ */
+
+import React, { Suspense, lazy, useCallback, useMemo, useRef, useState } from 'react';
+import { BenchmarkTarget, ExperimentRun } from './types';
 import { BENCHMARK_TARGETS } from './data/benchmarkTargets';
+import { createDemoSession } from './data/demoSession';
+import { DEFAULT_JUDGE_MODEL, DEFAULT_MODEL } from './config/models';
 import { buildConditionPrompts } from './utils/tokenBudget';
-import { calculateBLEU, calculateROUGEL, analyzeExperimentHypothesis } from './utils/metrics';
-import { MultiTrialRunner } from './utils/multiTrialRunner';
-import { MultiTrialExperimentSession } from './types';
+import { analyzeExperimentHypothesis } from './utils/metrics';
+import { MultiTrialRunner, RunProgressSnapshot } from './utils/multiTrialRunner';
+import { ApiError, isCancellation } from './utils/apiClient';
+import { MIN_TRIALS_FOR_INFERENCE } from './utils/statistics';
+import { useToasts } from './hooks/useToasts';
+import { usePersistentRunHistory } from './hooks/usePersistentRunHistory';
 import { Header } from './components/Header';
 import { HypothesisBanner } from './components/HypothesisBanner';
 import { BenchmarkSelector } from './components/BenchmarkSelector';
 import { TokenBudgetController } from './components/TokenBudgetController';
 import { HypothesisVerdictCard } from './components/HypothesisVerdictCard';
 import { ConditionArmsComparison } from './components/ConditionArmsComparison';
-import { EvaluationDashboard } from './components/EvaluationDashboard';
 import { ExportModal } from './components/ExportModal';
 import { ResetConfirmModal } from './components/ResetConfirmModal';
+import { RunProgressPanel } from './components/RunProgressPanel';
+import { EmptyState } from './components/EmptyState';
+import { Toaster } from './components/Toaster';
 
-const getDefaultResults = (): Record<ContextCondition, ConditionResult> => {
-  const initialPayloads = buildConditionPrompts(BENCHMARK_TARGETS[0], 750);
-  return {
-    code_only: {
-      condition: 'code_only',
-      title: 'Code Only',
-      role: 'floor',
-      generatedDocstring: `"""Attempts to consume a specific cost quota of tokens for a given partition key.
+/**
+ * The dashboard is code-split because it pulls in Recharts, comfortably the
+ * largest dependency in the bundle, for a view that sits below the fold and is
+ * empty until a run completes.
+ */
+const EvaluationDashboard = lazy(() =>
+  import('./components/EvaluationDashboard').then((module) => ({
+    default: module.EvaluationDashboard,
+  }))
+);
 
-Updates bucket balance based on elapsed monotonic time and handles burst debt if permitted.
+/** Default trial count: the minimum that permits a significance test. */
+const DEFAULT_TRIALS = MIN_TRIALS_FOR_INFERENCE;
 
-Args:
-    key: Unique identity shard string key.
-    cost: Number of tokens requested (default: 1).
-    max_tokens: Maximum capacity ceiling of the bucket (default: 100).
-    refill_rate_per_sec: Tokens added per second (default: 10.0).
-    allow_burst_debt: Whether deficit consumption is permitted (default: False).
+/** Default context token budget. */
+const DEFAULT_TOKEN_BUDGET = 750;
 
-Returns:
-    tuple[bool, float, int]: (is_allowed, reset_or_retry_delay_sec, remaining_or_debt_tokens).
-"""`,
-      rawResponse: '',
-      promptPayload: initialPayloads.code_only,
-      latencyMs: 840,
-      status: 'completed',
-      evaluation: {
-        accuracyScore: 8.8,
-        paramReturnScore: 8.5,
-        intentScore: 5.2,
-        hallucinationScore: 9.5,
-        overallQuality: 78,
-        bleuScore: 0.42,
-        rougeLScore: 0.58,
-        wordCount: 52,
-        tokenCount: 68,
-        judgeCritique: 'Accurately documents arguments and return tuple structure from code signature, but completely misses the critical hypervisor clock drift rationale and Redis failover intent.',
-        keyInsightsFound: ['Token bucket math', 'Burst debt argument', 'Monotonic time update'],
-        hallucinationsIdentified: []
-      }
-    },
-    few_shot_control: {
-      condition: 'few_shot_control',
-      title: 'Few-Shot Control',
-      role: 'control',
-      generatedDocstring: `"""Evaluates and consumes token capacity for key-based rate limiting with debt allowance.
+/** Default sampling temperature — low, for reproducibility. */
+const DEFAULT_TEMPERATURE = 0.2;
 
-Thread-safely recharges available bucket tokens using monotonic elapsed time. Supports bounded overdraft
-for high-priority requests while decrementing accrued deficit upon subsequent refills.
-
-Args:
-    key: Unique identity shard partition key.
-    cost: Quantity of tokens requested for consumption (default: 1).
-    max_tokens: Maximum capacity of the token bucket (default: 100).
-    refill_rate_per_sec: Rate of continuous token replenishment per second (default: 10.0).
-    allow_burst_debt: Enables temporary overdraft up to 50% max capacity (default: False).
-
-Returns:
-    A 3-tuple (allowed, retry_after, balance):
-        - allowed: True if request is admitted; False otherwise.
-        - retry_after: Delay in seconds until full recharge or needed tokens exist.
-        - balance: Current remaining tokens or negative debt.
-"""`,
-      rawResponse: '',
-      promptPayload: initialPayloads.few_shot_control,
-      latencyMs: 910,
-      status: 'completed',
-      evaluation: {
-        accuracyScore: 9.0,
-        paramReturnScore: 9.2,
-        intentScore: 6.4,
-        hallucinationScore: 9.6,
-        overallQuality: 84,
-        bleuScore: 0.51,
-        rougeLScore: 0.65,
-        wordCount: 78,
-        tokenCount: 95,
-        judgeCritique: 'Demonstrates improved docstring formatting and clearer parameter breakdown due to in-context few-shot demonstration length, but still lacks repo-specific root cause awareness.',
-        keyInsightsFound: ['Thread-safe lock awareness', 'Structured tuple return formatting', '50% burst debt ceiling'],
-        hallucinationsIdentified: []
-      }
-    },
-    call_graph: {
-      condition: 'call_graph',
-      title: 'Call-Graph Context',
-      role: 'treatment',
-      generatedDocstring: `"""Evaluates rate limit quota on the API gateway data plane with Enterprise burst overdraft support.
-
-Acts as the core token consumption primitive invoked by AuthGatewayMiddleware and TieredBillingInterceptor.
-Thread-safely locks the partition shard using an FNV-1a striped mutex, refills tokens based on elapsed monotonic
-time, and returns RFC 6585 compliant retry delays for HTTP 429 serialization.
-
-Args:
-    key: Unique identity shard key (e.g. client API token or tenant UUID).
-    cost: Number of tokens to consume for the incoming RPC (default: 1).
-    max_tokens: Peak burst capacity of the token bucket (default: 100).
-    refill_rate_per_sec: Steady-state token replenishment rate per second (default: 10.0).
-    allow_burst_debt: When True (Enterprise SLA), allows overdraft up to 50% capacity.
-
-Returns:
-    tuple[bool, float, int]:
-        - bool: True if admitted, False if rejected for 429 response.
-        - float: Retry delay or full reset interval in seconds.
-        - int: Remaining quota balance or active debt deficit.
-"""`,
-      rawResponse: '',
-      promptPayload: initialPayloads.call_graph,
-      latencyMs: 960,
-      status: 'completed',
-      evaluation: {
-        accuracyScore: 9.5,
-        paramReturnScore: 9.5,
-        intentScore: 9.2,
-        hallucinationScore: 9.8,
-        overallQuality: 94,
-        bleuScore: 0.68,
-        rougeLScore: 0.77,
-        wordCount: 96,
-        tokenCount: 122,
-        judgeCritique: 'Excellent architectural grounding. Identifies that this function sits in the L4 ingress proxy gateway, connects with AuthGatewayMiddleware for HTTP 429 Retry-After calculation, and uses striped mutexes.',
-        keyInsightsFound: ['AuthGatewayMiddleware caller role', 'RFC 6585 HTTP 429 Retry-After link', 'FNV-1a shard mutex context'],
-        hallucinationsIdentified: []
-      }
-    },
-    git_history: {
-      condition: 'git_history',
-      title: 'Git-History Context',
-      role: 'treatment',
-      generatedDocstring: `"""Thread-safely consumes token quota with hypervisor clock drift protection and amortized burst overdraft.
-
-Replenishes bucket tokens over elapsed monotonic time, clamping duration to non-negative values to prevent
-token loss during hypervisor clock synchronization steps. Supports burst debt consumption for Enterprise
-workloads to prevent 429 drop spikes during sub-second traffic surges.
-
-Args:
-    key: Shard partition identity key.
-    cost: Tokens required for this operation (default: 1).
-    max_tokens: Maximum token ceiling (default: 100).
-    refill_rate_per_sec: Tokens generated per continuous second (default: 10.0).
-    allow_burst_debt: If True, allows debt accumulation up to 50% capacity for burst absorption.
-
-Returns:
-    tuple[bool, float, int]:
-        - allowed (bool): True if operation can proceed.
-        - reset_or_retry (float): Seconds until full recovery or required balance.
-        - remaining (int): Available token balance or negative overdraft.
-"""`,
-      rawResponse: '',
-      promptPayload: initialPayloads.git_history,
-      latencyMs: 940,
-      status: 'completed',
-      evaluation: {
-        accuracyScore: 9.6,
-        paramReturnScore: 9.4,
-        intentScore: 9.6,
-        hallucinationScore: 9.7,
-        overallQuality: 95,
-        bleuScore: 0.72,
-        rougeLScore: 0.79,
-        wordCount: 92,
-        tokenCount: 118,
-        judgeCritique: 'Outstanding capture of subtle engineering intent. Correctly explains why elapsed time is clamped (Xen/KVM hypervisor clock sync stepping) and the business reason for burst debt during load bursts.',
-        keyInsightsFound: ['Hypervisor clock synchronization clamp', 'Sub-second traffic surge burst absorption', 'Debt amortization logic'],
-        hallucinationsIdentified: []
-      }
-    }
-  };
-};
-
-const getInitialBaselineRun = (): ExperimentRun => {
-  const payloads = buildConditionPrompts(BENCHMARK_TARGETS[0], 500);
-  const baselineResults: Record<ContextCondition, ConditionResult> = {
-    code_only: {
-      condition: 'code_only',
-      title: 'Code Only',
-      role: 'floor',
-      generatedDocstring: `"""Attempts to consume a specific cost quota of tokens for a given partition key."""`,
-      rawResponse: '',
-      promptPayload: payloads.code_only,
-      latencyMs: 790,
-      status: 'completed',
-      evaluation: {
-        accuracyScore: 8.5,
-        paramReturnScore: 8.2,
-        intentScore: 4.9,
-        hallucinationScore: 9.4,
-        overallQuality: 76,
-        bleuScore: 0.39,
-        rougeLScore: 0.54,
-        wordCount: 45,
-        tokenCount: 55,
-        judgeCritique: 'Accurate parameters but lacks intent depth.',
-        keyInsightsFound: ['Token bucket math'],
-        hallucinationsIdentified: [],
-      },
-    },
-    few_shot_control: {
-      condition: 'few_shot_control',
-      title: 'Few-Shot Control',
-      role: 'control',
-      generatedDocstring: `"""Evaluates and consumes token capacity for key-based rate limiting with debt allowance."""`,
-      rawResponse: '',
-      promptPayload: payloads.few_shot_control,
-      latencyMs: 840,
-      status: 'completed',
-      evaluation: {
-        accuracyScore: 8.8,
-        paramReturnScore: 8.9,
-        intentScore: 5.9,
-        hallucinationScore: 9.5,
-        overallQuality: 81,
-        bleuScore: 0.47,
-        rougeLScore: 0.62,
-        wordCount: 68,
-        tokenCount: 82,
-        judgeCritique: 'Clear few-shot formatting structure.',
-        keyInsightsFound: ['Structured return formatting'],
-        hallucinationsIdentified: [],
-      },
-    },
-    call_graph: {
-      condition: 'call_graph',
-      title: 'Call-Graph Context',
-      role: 'treatment',
-      generatedDocstring: `"""Thread-safely evaluates rate limit quota on API gateway routes."""`,
-      rawResponse: '',
-      promptPayload: payloads.call_graph,
-      latencyMs: 890,
-      status: 'completed',
-      evaluation: {
-        accuracyScore: 9.2,
-        paramReturnScore: 9.1,
-        intentScore: 8.5,
-        hallucinationScore: 9.6,
-        overallQuality: 89,
-        bleuScore: 0.61,
-        rougeLScore: 0.71,
-        wordCount: 78,
-        tokenCount: 94,
-        judgeCritique: 'Identified AuthGatewayMiddleware caller constraints.',
-        keyInsightsFound: ['AuthGatewayMiddleware caller role'],
-        hallucinationsIdentified: [],
-      },
-    },
-    git_history: {
-      condition: 'git_history',
-      title: 'Git-History Context',
-      role: 'treatment',
-      generatedDocstring: `"""Thread-safely consumes token quota with clock sync protection."""`,
-      rawResponse: '',
-      promptPayload: payloads.git_history,
-      latencyMs: 880,
-      status: 'completed',
-      evaluation: {
-        accuracyScore: 9.3,
-        paramReturnScore: 9.2,
-        intentScore: 8.9,
-        hallucinationScore: 9.6,
-        overallQuality: 91,
-        bleuScore: 0.65,
-        rougeLScore: 0.74,
-        wordCount: 80,
-        tokenCount: 96,
-        judgeCritique: 'Identified Xen/KVM hypervisor clock synchronization clamp.',
-        keyInsightsFound: ['Hypervisor clock synchronization clamp'],
-        hallucinationsIdentified: [],
-      },
-    },
-  };
-
-  const baselineSession = MultiTrialRunner.createBaselineMultiTrialSession(BENCHMARK_TARGETS[0], 500);
-
-  const run: ExperimentRun = {
-    id: 'run-baseline-500t',
-    timestamp: Date.now() - 1000 * 60 * 10,
-    targetId: BENCHMARK_TARGETS[0].id,
-    targetName: BENCHMARK_TARGETS[0].name,
-    language: BENCHMARK_TARGETS[0].language,
-    tokenBudget: 500,
-    modelName: 'gemini-3.7-flash',
-    temperature: 0.2,
-    trialIndex: 1,
-    results: baselineResults,
-    multiTrialSession: baselineSession,
-    rawTrials: baselineSession.rawTrials,
-  };
-  run.analysis = analyzeExperimentHypothesis(run);
-  return run;
-};
+/** Placeholder shown while the dashboard chunk loads. */
+const DashboardFallback: React.FC = () => (
+  <div
+    className="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center text-xs text-slate-500"
+    role="status"
+  >
+    Loading charts…
+  </div>
+);
 
 export default function App() {
+  // --- Run parameters ----------------------------------------------------
   const [selectedTarget, setSelectedTarget] = useState<BenchmarkTarget>(BENCHMARK_TARGETS[0]);
-  const [tokenBudget, setTokenBudget] = useState<number>(750);
-  const [temperature, setTemperature] = useState<number>(0.2);
-  const [modelName, setModelName] = useState<string>('gemini-3.7-flash');
-  const [judgeModel, setJudgeModel] = useState<string>('gemini-3.7-flash');
+  const [tokenBudget, setTokenBudget] = useState<number>(DEFAULT_TOKEN_BUDGET);
+  const [temperature, setTemperature] = useState<number>(DEFAULT_TEMPERATURE);
+  const [modelName, setModelName] = useState<string>(DEFAULT_MODEL);
+  const [judgeModel, setJudgeModel] = useState<string>(DEFAULT_JUDGE_MODEL);
+  const [numTrials, setNumTrials] = useState<number>(DEFAULT_TRIALS);
 
-  // Benchmark execution state
-  const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [currentStep, setCurrentStep] = useState<'idle' | 'generating' | 'evaluating' | 'completed'>('idle');
-  const [exportModalOpen, setExportModalOpen] = useState<boolean>(false);
-  const [resetModalOpen, setResetModalOpen] = useState<boolean>(false);
-  const [runHistory, setRunHistory] = useState<ExperimentRun[]>(() => [getInitialBaselineRun()]);
-  const [multiTrialSession, setMultiTrialSession] = useState<MultiTrialExperimentSession | undefined>(
-    () => getInitialBaselineRun().multiTrialSession
-  );
+  // --- Execution state ---------------------------------------------------
+  const [isRunning, setIsRunning] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [progress, setProgress] = useState<RunProgressSnapshot | null>(null);
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+
+  /**
+   * Aborts the in-flight run. Held in a ref rather than state because changing
+   * it must not trigger a re-render, and it is read from an async callback that
+   * would otherwise close over a stale value.
+   */
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // --- Results -----------------------------------------------------------
+  /** The run currently on display. Null until the first run or demo load. */
+  const [activeRun, setActiveRun] = useState<ExperimentRun | null>(null);
+
+  const { toasts, pushToast, dismissToast } = useToasts();
+  const {
+    runHistory,
+    addRun,
+    clearHistory,
+    persistenceError,
+    exportHistoryJson,
+    importHistoryJson,
+  } = usePersistentRunHistory();
+
+  // --- Modals and transient UI ------------------------------------------
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [resetModalOpen, setResetModalOpen] = useState(false);
   const [copiedNotification, setCopiedNotification] = useState<{
     targetName: string;
     budget: number;
@@ -327,235 +124,389 @@ export default function App() {
     model: string;
   } | null>(null);
 
-  // Computed condition prompt payloads based on target and fixed budget
-  const promptPayloads = useMemo(() => {
-    return buildConditionPrompts(selectedTarget, tokenBudget);
-  }, [selectedTarget, tokenBudget]);
+  /**
+   * Live prompt payloads for the controller's token-allocation preview.
+   *
+   * Memoized on (target, budget) so dragging the budget slider does not rebuild
+   * four prompts per animation frame. The slider itself only commits on release
+   * (see TokenBudgetController), so this recomputes once per settled value.
+   */
+  const promptPayloads = useMemo(
+    () => buildConditionPrompts(selectedTarget, tokenBudget),
+    [selectedTarget, tokenBudget]
+  );
 
-  // Current condition results
-  const [results, setResults] = useState<Record<ContextCondition, ConditionResult>>(() => getDefaultResults());
-
-  // Current active experiment run for hypothesis evaluation
-  const currentRun = useMemo<ExperimentRun>(() => {
-    const run: ExperimentRun = {
-      id: `run-${Date.now()}`,
-      timestamp: Date.now(),
-      targetId: selectedTarget.id,
-      targetName: selectedTarget.name,
-      language: selectedTarget.language,
-      tokenBudget,
-      modelName,
-      temperature,
-      trialIndex: runHistory.length + 1,
-      results,
-      multiTrialSession,
-      rawTrials: multiTrialSession?.rawTrials,
-    };
-    run.analysis = analyzeExperimentHypothesis(run);
-    return run;
-  }, [selectedTarget, tokenBudget, modelName, temperature, results, runHistory.length, multiTrialSession]);
-
-  // Derive previous run for comparative percentage delta calculations
+  /**
+   * The previous run, for comparative deltas.
+   *
+   * Compared by id against the active run. The old implementation minted
+   * `run-${Date.now()}` inside a `useMemo` that reran on every render, so the
+   * id it compared against changed constantly and this lookup was unreliable.
+   * Run ids are now assigned once, when the run is created.
+   */
   const previousRun = useMemo(() => {
-    if (!runHistory || runHistory.length === 0) return null;
-    // If runHistory[0] matches current active run, look at runHistory[1]
-    if (runHistory[0]?.id === currentRun.id) {
+    if (runHistory.length === 0) return null;
+    if (activeRun && runHistory[0]?.id === activeRun.id) {
       return runHistory.length > 1 ? runHistory[1] : null;
     }
-    // Otherwise the most recent run in history is the previous run
     return runHistory[0];
-  }, [runHistory, currentRun]);
+  }, [runHistory, activeRun]);
 
-  // Sync initial run to history
-  useEffect(() => {
-    if (runHistory.length === 0 && results.code_only?.evaluation) {
-      setRunHistory([currentRun]);
-    }
-  }, []);
+  /** True when any displayed data is illustrative rather than measured. */
+  const isShowingDemoData = activeRun?.isDemoData === true;
 
-  // Update prompt payloads when target or budget changes
-  useEffect(() => {
-    setResults((prev) => ({
-      code_only: { ...prev.code_only, promptPayload: promptPayloads.code_only },
-      few_shot_control: { ...prev.few_shot_control, promptPayload: promptPayloads.few_shot_control },
-      call_graph: { ...prev.call_graph, promptPayload: promptPayloads.call_graph },
-      git_history: { ...prev.git_history, promptPayload: promptPayloads.git_history },
-    }));
-  }, [promptPayloads]);
+  /**
+   * Executes the benchmark.
+   *
+   * Wrapped in `useCallback` so the memoized child components below do not
+   * re-render on every parent render — without a stable identity, `React.memo`
+   * on the dashboard and comparison views would never hold.
+   */
+  const handleRunBenchmark = useCallback(async () => {
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
-  // Execute the 4-Arm Isolation Benchmark (Single run at a time)
-  const handleRunBenchmark = async () => {
     setIsRunning(true);
-    setCurrentStep('generating');
-
-    // Set generating status on cards
-    setResults((prev) => ({
-      code_only: { ...prev.code_only, status: 'generating' },
-      few_shot_control: { ...prev.few_shot_control, status: 'generating' },
-      call_graph: { ...prev.call_graph, status: 'generating' },
-      git_history: { ...prev.git_history, status: 'generating' },
-    }));
+    setIsCancelling(false);
+    setRunStartedAt(Date.now());
+    setProgress({
+      phase: 'generating',
+      trialsCompleted: 0,
+      totalTrials: numTrials,
+      requestsCompleted: 0,
+      totalRequests: numTrials * 7 + 1,
+      message: 'Starting benchmark…',
+    });
 
     try {
       const session = await MultiTrialRunner.runExperimentSession({
         target: selectedTarget,
         tokenBudget,
-        numTrials: 1,
+        numTrials,
         modelName,
         temperature,
         judgeModel,
-        onProgress: (_trial, _total, phase) => {
-          setCurrentStep(phase === 'generating' ? 'generating' : 'evaluating');
-        },
+        onProgress: setProgress,
+        signal: controller.signal,
       });
 
-      const newRun = MultiTrialRunner.convertToExperimentRun(session);
-      setResults(newRun.results);
-      setMultiTrialSession(session);
-      setRunHistory((prev) => [newRun, ...prev]);
-    } catch (err: any) {
-      console.error('Benchmark run error:', err);
+      const completedRun = MultiTrialRunner.convertToExperimentRun(session);
+      setActiveRun(completedRun);
+      addRun(completedRun);
+
+      // Report the run's real outcome rather than implying success.
+      if (session.status === 'failed') {
+        pushToast({
+          variant: 'error',
+          title: 'Benchmark failed — no results were produced',
+          description:
+            session.errors?.join('\n') ??
+            'Every arm failed. Check that GEMINI_API_KEY is valid and the model is available.',
+        });
+      } else if (session.status === 'partial_error') {
+        pushToast({
+          variant: 'warning',
+          title: 'Benchmark completed with failures',
+          description: `Some arms or trials did not produce a usable result and are excluded from the statistics.\n\n${
+            session.errors?.slice(0, 3).join('\n') ?? ''
+          }`,
+        });
+      } else if (numTrials < MIN_TRIALS_FOR_INFERENCE) {
+        pushToast({
+          variant: 'info',
+          title: `Descriptive results only (${numTrials} trial${numTrials === 1 ? '' : 's'})`,
+          description: `Significance testing needs at least ${MIN_TRIALS_FOR_INFERENCE} paired trials. Raise the trial count to get p-values and confidence intervals.`,
+        });
+      } else {
+        pushToast({
+          variant: 'success',
+          title: 'Benchmark complete',
+          description: session.overallVerdict.headline,
+        });
+      }
+    } catch (error: unknown) {
+      if (isCancellation(error)) {
+        pushToast({
+          variant: 'info',
+          title: 'Run cancelled',
+          description: 'No results were recorded for the cancelled run.',
+        });
+      } else {
+        // The real reason, surfaced where the user can see it. This path used
+        // to be a bare console.error.
+        pushToast({
+          variant: 'error',
+          title: 'Benchmark run failed',
+          description:
+            error instanceof ApiError
+              ? error.displayMessage
+              : error instanceof Error
+                ? error.message
+                : 'An unexpected error occurred.',
+        });
+      }
     } finally {
+      abortControllerRef.current = null;
       setIsRunning(false);
-      setCurrentStep('completed');
+      setIsCancelling(false);
+      setProgress(null);
+      setRunStartedAt(null);
     }
-  };
+  }, [
+    selectedTarget,
+    tokenBudget,
+    numTrials,
+    modelName,
+    temperature,
+    judgeModel,
+    addRun,
+    pushToast,
+  ]);
 
-  const handleConfirmReset = () => {
+  /** Requests cancellation of the in-flight run. */
+  const handleCancelRun = useCallback(() => {
+    setIsCancelling(true);
+    abortControllerRef.current?.abort();
+  }, []);
+
+  /** Loads the illustrative sample dataset, clearly flagged as such. */
+  const handleLoadDemo = useCallback(() => {
+    const session = createDemoSession(selectedTarget, tokenBudget);
+    const demoRun = MultiTrialRunner.convertToExperimentRun(session);
+
+    setActiveRun(demoRun);
+    addRun(demoRun);
+    pushToast({
+      variant: 'warning',
+      title: 'Sample data loaded',
+      description:
+        'These scores are illustrative and were not measured from a model. They are labelled as demo data throughout, including in exports.',
+    });
+  }, [selectedTarget, tokenBudget, addRun, pushToast]);
+
+  /** Restores defaults and clears all results. */
+  const handleConfirmReset = useCallback(() => {
     setSelectedTarget(BENCHMARK_TARGETS[0]);
-    setTokenBudget(750);
-    setTemperature(0.2);
-    setModelName('gemini-3.7-flash');
-    setJudgeModel('gemini-3.7-flash');
-    setResults(getDefaultResults());
-    const initialRun = getInitialBaselineRun();
-    setRunHistory([initialRun]);
-    setMultiTrialSession(initialRun.multiTrialSession);
-    setCurrentStep('idle');
-  };
+    setTokenBudget(DEFAULT_TOKEN_BUDGET);
+    setTemperature(DEFAULT_TEMPERATURE);
+    setModelName(DEFAULT_MODEL);
+    setJudgeModel(DEFAULT_JUDGE_MODEL);
+    setNumTrials(DEFAULT_TRIALS);
+    setActiveRun(null);
+    clearHistory();
+    setResetModalOpen(false);
+    pushToast({
+      variant: 'info',
+      title: 'Experiment reset',
+      description: 'Parameters restored to defaults and all run history cleared.',
+    });
+  }, [clearHistory, pushToast]);
 
-  const handleCopyRunParameters = (run: ExperimentRun) => {
+  /** Copies a historical run's parameters back into the controller. */
+  const handleCopyRunParameters = useCallback((run: ExperimentRun) => {
     setTokenBudget(run.tokenBudget);
     setTemperature(run.temperature);
     setModelName(run.modelName);
-    if (run.multiTrialSession?.judgeModel) {
-      setJudgeModel(run.multiTrialSession.judgeModel);
-    }
+
+    if (run.multiTrialSession?.judgeModel) setJudgeModel(run.multiTrialSession.judgeModel);
+    if (run.multiTrialSession?.numTrials) setNumTrials(run.multiTrialSession.numTrials);
+
     const target = BENCHMARK_TARGETS.find((t) => t.id === run.targetId);
-    if (target) {
-      setSelectedTarget(target);
-    }
+    if (target) setSelectedTarget(target);
+
     setCopiedNotification({
       targetName: run.targetName,
       budget: run.tokenBudget,
       temperature: run.temperature,
       model: run.modelName,
     });
-    // Smoothly scroll to the controller so the user immediately sees the updated sliders
-    setTimeout(() => {
-      const controllerEl = document.getElementById('token-budget-controller');
-      if (controllerEl) {
-        controllerEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    // Scrolling is deferred a frame so the controller has re-rendered with the
+    // new values before it is brought into view.
+    requestAnimationFrame(() => {
+      document
+        .getElementById('token-budget-controller')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }, []);
+
+  /** Downloads the full run history as JSON for archiving or sharing. */
+  const handleExportHistory = useCallback(() => {
+    const blob = new Blob([exportHistoryJson()], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `codedoc-isolator-history-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }, [exportHistoryJson]);
+
+  /** Restores a previously exported history file. */
+  const handleImportHistory = useCallback(
+    (json: string) => {
+      try {
+        const count = importHistoryJson(json);
+        pushToast({
+          variant: 'success',
+          title: `Imported ${count} run${count === 1 ? '' : 's'}`,
+        });
+      } catch (error: unknown) {
+        pushToast({
+          variant: 'error',
+          title: 'Import failed',
+          description: error instanceof Error ? error.message : 'The file could not be read.',
+        });
       }
-    }, 50);
-  };
+    },
+    [importHistoryJson, pushToast]
+  );
+
+  /**
+   * The displayed run, with its single-run analysis attached.
+   *
+   * A run produced by the multi-trial runner already carries statistically
+   * corrected verdicts; `analyzeExperimentHypothesis` only fills in the
+   * descriptive single-run summary when that is missing.
+   */
+  const displayRun = useMemo(() => {
+    if (!activeRun) return null;
+    if (activeRun.analysis) return activeRun;
+    return { ...activeRun, analysis: analyzeExperimentHypothesis(activeRun) };
+  }, [activeRun]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans antialiased selection:bg-indigo-900 selection:text-white">
-      {/* Top Header */}
       <Header
         onReset={() => setResetModalOpen(true)}
         onOpenExport={() => setExportModalOpen(true)}
         isRunning={isRunning}
         modelName={modelName}
         tokenBudget={tokenBudget}
+        numTrials={numTrials}
+        hasResults={displayRun !== null}
+        isShowingDemoData={isShowingDemoData}
       />
 
-      {/* Main Workspace */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* Scientific Confound Protocol Banner */}
         <HypothesisBanner />
 
-        {/* Target Benchmark Function Selector */}
+        {/*
+          Storage failures are shown inline rather than as a transient toast,
+          because the consequence (results will not survive a reload) persists
+          for the whole session.
+        */}
+        {persistenceError && (
+          <div
+            role="alert"
+            className="bg-amber-50 border border-amber-300 text-amber-950 px-4 py-3 rounded-xl text-xs"
+          >
+            <strong className="font-bold">History not saved. </strong>
+            {persistenceError}
+          </div>
+        )}
+
         <BenchmarkSelector
           selectedTarget={selectedTarget}
-          onSelectTarget={(target) => setSelectedTarget(target)}
+          onSelectTarget={setSelectedTarget}
           isRunning={isRunning}
         />
 
-        {/* Parameters Copied Feedback Notification */}
         {copiedNotification && (
           <div
             id="params-copied-banner"
-            className="bg-emerald-50 border border-emerald-300 text-emerald-950 px-4 py-3 rounded-xl text-xs flex items-center justify-between shadow-2xs animate-in fade-in duration-200"
+            role="status"
+            className="bg-emerald-50 border border-emerald-300 text-emerald-950 px-4 py-3 rounded-xl text-xs flex items-center justify-between gap-3"
           >
-            <div className="flex items-center space-x-2.5">
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-200 text-emerald-800 font-bold text-xs">
+            <div className="flex items-center space-x-2.5 min-w-0">
+              <span
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-200 text-emerald-800 font-bold text-xs"
+                aria-hidden="true"
+              >
                 ✓
               </span>
-              <div>
-                <span className="font-bold text-emerald-900">Run Parameters Loaded into Controller:</span>{' '}
+              <div className="min-w-0">
+                <span className="font-bold text-emerald-900">Parameters loaded: </span>
                 <span className="text-emerald-800">
-                  Target: <strong className="text-emerald-950 font-mono font-semibold">{copiedNotification.targetName}</strong> | Budget:{' '}
-                  <strong className="text-emerald-950 font-mono font-bold">{copiedNotification.budget} tokens</strong> | Temp:{' '}
-                  <strong className="text-emerald-950 font-mono font-bold">{copiedNotification.temperature}</strong> | Model:{' '}
-                  <strong className="text-emerald-950 font-mono font-semibold">{copiedNotification.model}</strong>
+                  {copiedNotification.targetName} · {copiedNotification.budget} tokens · temp{' '}
+                  {copiedNotification.temperature} · {copiedNotification.model}
                 </span>
               </div>
             </div>
             <button
               type="button"
               onClick={() => setCopiedNotification(null)}
-              className="text-emerald-700 hover:text-emerald-950 text-base font-bold ml-3 cursor-pointer"
-              title="Dismiss notice"
+              aria-label="Dismiss parameters notice"
+              className="text-emerald-700 hover:text-emerald-950 text-base font-bold shrink-0 cursor-pointer focus:outline-hidden focus-visible:ring-2 focus-visible:ring-emerald-600 rounded px-1"
             >
               ×
             </button>
           </div>
         )}
 
-        {/* Token Budget Slider & Execution Trigger */}
         <TokenBudgetController
           tokenBudget={tokenBudget}
-          onBudgetChange={(b) => setTokenBudget(b)}
+          onBudgetChange={setTokenBudget}
           temperature={temperature}
-          onTemperatureChange={(t) => setTemperature(t)}
+          onTemperatureChange={setTemperature}
           model={modelName}
-          onModelChange={(m) => setModelName(m)}
+          onModelChange={setModelName}
           judgeModel={judgeModel}
-          onJudgeModelChange={(jm) => setJudgeModel(jm)}
+          onJudgeModelChange={setJudgeModel}
+          numTrials={numTrials}
+          onNumTrialsChange={setNumTrials}
           promptPayloads={promptPayloads}
+          target={selectedTarget}
           isRunning={isRunning}
           onRunBenchmark={handleRunBenchmark}
-          currentStep={currentStep}
+          progressMessage={progress?.message}
         />
 
-        {/* The Central Scientific Hypothesis Verdict */}
-        <HypothesisVerdictCard experimentRun={currentRun} previousRun={previousRun} />
+        {isRunning && (
+          <RunProgressPanel
+            progress={progress}
+            startedAt={runStartedAt}
+            onCancel={handleCancelRun}
+            isCancelling={isCancelling}
+          />
+        )}
 
-        {/* 4-Arm Side-by-Side Generated Docstrings & Detailed Rubrics */}
-        <ConditionArmsComparison
-          results={results}
-          referenceDocstring={selectedTarget.referenceDocstring}
-        />
+        {displayRun ? (
+          <>
+            <HypothesisVerdictCard experimentRun={displayRun} previousRun={previousRun} />
 
-        {/* Multi-Dimensional Radar Charts, Score Graphs, & Trial History */}
-        <EvaluationDashboard
-          experimentRun={currentRun}
-          runHistory={runHistory}
-          onCopyRunParameters={handleCopyRunParameters}
-        />
+            <ConditionArmsComparison
+              results={displayRun.results}
+              referenceDocstring={selectedTarget.referenceDocstring}
+              isDemoData={isShowingDemoData}
+            />
+
+            <Suspense fallback={<DashboardFallback />}>
+              <EvaluationDashboard
+                experimentRun={displayRun}
+                runHistory={runHistory}
+                onCopyRunParameters={handleCopyRunParameters}
+              />
+            </Suspense>
+          </>
+        ) : (
+          <EmptyState
+            onRunBenchmark={handleRunBenchmark}
+            onLoadDemo={handleLoadDemo}
+            isRunning={isRunning}
+            plannedTrials={numTrials}
+          />
+        )}
       </main>
 
-      {/* Export Findings Modal */}
       <ExportModal
         isOpen={exportModalOpen}
         onClose={() => setExportModalOpen(false)}
-        currentRun={currentRun}
+        currentRun={displayRun}
         runHistory={runHistory}
+        onExportHistory={handleExportHistory}
+        onImportHistory={handleImportHistory}
       />
 
-      {/* Reset Confirmation Modal */}
       <ResetConfirmModal
         isOpen={resetModalOpen}
         onClose={() => setResetModalOpen(false)}
@@ -564,6 +515,8 @@ export default function App() {
         currentBudget={tokenBudget}
         runCount={runHistory.length}
       />
+
+      <Toaster toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

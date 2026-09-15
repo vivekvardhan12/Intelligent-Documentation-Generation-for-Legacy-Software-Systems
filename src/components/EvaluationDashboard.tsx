@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { Suspense, lazy, memo, useCallback, useMemo, useState } from 'react';
 import { ContextCondition, ExperimentRun } from '../types';
 import {
   ResponsiveContainer,
@@ -27,8 +27,26 @@ import {
   Check,
   Scale,
   Coins,
+  AlertTriangle,
 } from 'lucide-react';
-import { RunComparisonView } from './RunComparisonView';
+import { DemoDataBadge } from './DemoDataBadge';
+
+/**
+ * The comparison view is lazily loaded: it is a 1,000-line component with its
+ * own Recharts surfaces that only renders when the user switches to the
+ * "Compare Two Runs" tab, so it does not belong in the dashboard's chunk.
+ */
+const RunComparisonView = lazy(() =>
+  import('./RunComparisonView').then((module) => ({ default: module.RunComparisonView }))
+);
+
+/** The four arms, in canonical display order. */
+const ARM_KEYS: ContextCondition[] = [
+  'code_only',
+  'few_shot_control',
+  'call_graph',
+  'git_history',
+];
 
 interface EvaluationDashboardProps {
   experimentRun: ExperimentRun;
@@ -36,7 +54,7 @@ interface EvaluationDashboardProps {
   onCopyRunParameters?: (run: ExperimentRun) => void;
 }
 
-export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
+const EvaluationDashboardComponent: React.FC<EvaluationDashboardProps> = ({
   experimentRun,
   runHistory,
   onCopyRunParameters,
@@ -57,100 +75,106 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
     return list;
   }, [experimentRun, runHistory]);
 
-  const handleCopyParams = (run: ExperimentRun) => {
-    if (onCopyRunParameters) {
-      onCopyRunParameters(run);
-    }
-    setCopiedRunId(run.id);
-    setTimeout(() => {
-      setCopiedRunId(null);
-    }, 2500);
-  };
+  const handleCopyParams = useCallback(
+    (run: ExperimentRun) => {
+      onCopyRunParameters?.(run);
+      setCopiedRunId(run.id);
+      setTimeout(() => setCopiedRunId(null), 2500);
+    },
+    [onCopyRunParameters]
+  );
 
   const results = experimentRun.results;
-  if (!results.code_only?.evaluation) return null;
-
-  // Radar chart data for the 5 criteria
-  const radarData = [
-    {
-      metric: 'Accuracy',
-      code_only: (results.code_only?.evaluation?.accuracyScore || 0) * 10,
-      few_shot_control: (results.few_shot_control?.evaluation?.accuracyScore || 0) * 10,
-      call_graph: (results.call_graph?.evaluation?.accuracyScore || 0) * 10,
-      git_history: (results.git_history?.evaluation?.accuracyScore || 0) * 10,
-    },
-    {
-      metric: 'Param/Return',
-      code_only: (results.code_only?.evaluation?.paramReturnScore || 0) * 10,
-      few_shot_control: (results.few_shot_control?.evaluation?.paramReturnScore || 0) * 10,
-      call_graph: (results.call_graph?.evaluation?.paramReturnScore || 0) * 10,
-      git_history: (results.git_history?.evaluation?.paramReturnScore || 0) * 10,
-    },
-    {
-      metric: 'Intent & "Why"',
-      code_only: (results.code_only?.evaluation?.intentScore || 0) * 10,
-      few_shot_control: (results.few_shot_control?.evaluation?.intentScore || 0) * 10,
-      call_graph: (results.call_graph?.evaluation?.intentScore || 0) * 10,
-      git_history: (results.git_history?.evaluation?.intentScore || 0) * 10,
-    },
-    {
-      metric: 'Hallucination Res.',
-      code_only: (results.code_only?.evaluation?.hallucinationScore || 0) * 10,
-      few_shot_control: (results.few_shot_control?.evaluation?.hallucinationScore || 0) * 10,
-      call_graph: (results.call_graph?.evaluation?.hallucinationScore || 0) * 10,
-      git_history: (results.git_history?.evaluation?.hallucinationScore || 0) * 10,
-    },
-    {
-      metric: 'Lexical Match (BLEU)',
-      code_only: Math.round((results.code_only?.evaluation?.bleuScore || 0) * 100),
-      few_shot_control: Math.round((results.few_shot_control?.evaluation?.bleuScore || 0) * 100),
-      call_graph: Math.round((results.call_graph?.evaluation?.bleuScore || 0) * 100),
-      git_history: Math.round((results.git_history?.evaluation?.bleuScore || 0) * 100),
-    },
-  ];
-
   const session = experimentRun.multiTrialSession;
 
-  // Bar Chart comparison of Overall Quality
-  const barData = [
-    {
-      name: 'Code Only',
-      score: results.code_only?.evaluation?.overallQuality ?? 0,
-      color: '#64748b',
-      role: 'Baseline Floor',
-    },
-    {
-      name: 'Few-Shot Control',
-      score: results.few_shot_control?.evaluation?.overallQuality ?? 0,
-      color: '#4f46e5',
-      role: 'Length Control',
-    },
-    {
-      name: 'Call-Graph',
-      score: results.call_graph?.evaluation?.overallQuality ?? 0,
-      color: '#059669',
-      role: 'Structural Context',
-    },
-    {
-      name: 'Git-History',
-      score: results.git_history?.evaluation?.overallQuality ?? 0,
-      color: '#d97706',
-      role: 'Evolutionary Context',
-    },
-  ];
+  /**
+   * Arms that produced no usable result.
+   *
+   * These are reported to the user and OMITTED from the charts. The previous
+   * code did two harmful things here: it bailed out with
+   * `if (!results.code_only?.evaluation) return null;` — an early return placed
+   * ABOVE a `useMemo`, which violates the rules of hooks and made the entire
+   * dashboard vanish whenever the floor arm failed — and it fed `|| 0` into
+   * every chart series, so a failed arm was plotted as a genuine score of zero.
+   */
+  const failedArms = useMemo(
+    () =>
+      ARM_KEYS.filter((arm) => !results[arm]?.evaluation).map(
+        (arm) => results[arm]?.title ?? arm
+      ),
+    [results]
+  );
 
-  // Token budget compliance data
-  const tokenComplianceData = useMemo(() => {
-    const conditions: ContextCondition[] = ['code_only', 'few_shot_control', 'call_graph', 'git_history'];
-    return conditions.map((c) => {
-      const res = results[c];
-      const tok = res?.tokens;
+  /**
+   * Radar data across the four rubric dimensions plus BLEU.
+   *
+   * Values are `null` for unmeasured arms; Recharts skips null points rather
+   * than drawing them at the origin, so a missing arm leaves a gap instead of
+   * appearing to have scored zero on everything.
+   */
+  const radarData = useMemo(() => {
+    /** Reads one dimension for every arm, scaling 1-10 scores to 0-100. */
+    const dimension = (
+      metric: string,
+      project: (arm: ContextCondition) => number | undefined,
+      scale = 10
+    ) => {
+      const row: Record<string, string | number | null> = { metric };
+      for (const arm of ARM_KEYS) {
+        const value = project(arm);
+        row[arm] = typeof value === 'number' ? Math.round(value * scale) : null;
+      }
+      return row;
+    };
+
+    return [
+      dimension('Accuracy', (arm) => results[arm]?.evaluation?.accuracyScore),
+      dimension('Param/Return', (arm) => results[arm]?.evaluation?.paramReturnScore),
+      dimension('Intent & "Why"', (arm) => results[arm]?.evaluation?.intentScore),
+      dimension('Hallucination Res.', (arm) => results[arm]?.evaluation?.hallucinationScore),
+      dimension('Lexical Match (BLEU)', (arm) => results[arm]?.evaluation?.bleuScore, 100),
+    ];
+  }, [results]);
+
+  /** Bar data for the composite score, with per-arm confidence intervals. */
+  const barData = useMemo(() => {
+    const ARM_COLORS: Record<ContextCondition, string> = {
+      code_only: '#64748b',
+      few_shot_control: '#4f46e5',
+      call_graph: '#059669',
+      git_history: '#d97706',
+    };
+
+    return ARM_KEYS.filter((arm) => results[arm]?.evaluation).map((arm) => {
+      const stats = session?.armStats?.[arm];
+      const evaluation = results[arm]?.evaluation;
+
       return {
-        arm: res?.title || c,
-        requested: tok?.requestedBudget || (c === 'code_only' ? 0 : experimentRun.tokenBudget),
-        actualInput: tok?.totalInputTokens || res?.promptPayload?.exactPromptTokens || 0,
-        outputTokens: tok?.outputTokens || 75,
-        compliancePct: tok?.compliancePercentage ?? 100,
+        name: results[arm]?.title ?? arm,
+        score: stats?.mean ?? evaluation?.overallQuality ?? 0,
+        color: ARM_COLORS[arm],
+        role: results[arm]?.role ?? '',
+        // Error bars are only meaningful with a real interval behind them.
+        ciLower: stats?.ci95?.[0] ?? null,
+        ciUpper: stats?.ci95?.[1] ?? null,
+        n: stats?.n ?? 1,
+      };
+    });
+  }, [results, session]);
+
+  /** Token budget compliance per arm — verifies the experimental control held. */
+  const tokenComplianceData = useMemo(() => {
+    return ARM_KEYS.map((arm) => {
+      const result = results[arm];
+      const tokens = result?.tokens;
+
+      return {
+        arm: result?.title || arm,
+        requested: tokens?.requestedBudget ?? (arm === 'code_only' ? 0 : experimentRun.tokenBudget),
+        actualInput: tokens?.totalInputTokens || result?.promptPayload?.exactPromptTokens || 0,
+        outputTokens: tokens?.outputTokens ?? 0,
+        compliancePct: tokens?.compliancePercentage ?? 100,
+        method: tokens?.method ?? 'ESTIMATED',
       };
     });
   }, [results, experimentRun.tokenBudget]);
@@ -162,16 +186,39 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
 
   return (
     <div id="evaluation-dashboard" className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-6 space-y-6">
+      {/*
+        Failed arms are named explicitly. They are excluded from every chart
+        and statistic rather than being plotted as zero, so the user needs to
+        know which series are missing and why.
+      */}
+      {failedArms.length > 0 && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-lg border border-rose-300 bg-rose-50 p-3 text-xs text-rose-950"
+        >
+          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-px" aria-hidden="true" />
+          <p>
+            <strong className="font-bold">
+              {failedArms.length} arm{failedArms.length === 1 ? '' : 's'} produced no usable
+              result:{' '}
+            </strong>
+            {failedArms.join(', ')}. These are omitted from the charts and excluded from all
+            statistics — they are not plotted as zero.
+          </p>
+        </div>
+      )}
+
       {/* Header with Dashboard View Toggle */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
         <div>
-          <h3 className="text-base font-bold text-slate-900 flex items-center space-x-2">
-            <Activity className="w-4 h-4 text-indigo-900" />
+          <h3 className="text-base font-bold text-slate-900 flex flex-wrap items-center gap-2">
+            <Activity className="w-4 h-4 text-indigo-900" aria-hidden="true" />
             <span>
               {viewMode === 'visualizer'
                 ? 'Multi-Dimensional Analysis & Benchmark Statistics'
                 : 'Dedicated Side-by-Side Run Comparison'}
             </span>
+            {experimentRun.isDemoData && <DemoDataBadge size="sm" />}
           </h3>
           <p className="text-xs text-slate-500">
             {viewMode === 'visualizer'
@@ -225,12 +272,22 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
 
       {/* Conditional View: Active Run Visualizer vs Side-by-Side Comparison */}
       {viewMode === 'comparison' ? (
-        <RunComparisonView
-          runs={allRuns}
-          defaultRunAId={selectedComparisonRunId || (allRuns.length > 1 ? allRuns[1].id : allRuns[0]?.id)}
-          defaultRunBId={experimentRun.id}
-          onCopyRunParameters={handleCopyParams}
-        />
+        <Suspense
+          fallback={
+            <div className="p-8 text-center text-xs text-slate-500" role="status">
+              Loading comparison view…
+            </div>
+          }
+        >
+          <RunComparisonView
+            runs={allRuns}
+            defaultRunAId={
+              selectedComparisonRunId || (allRuns.length > 1 ? allRuns[1].id : allRuns[0]?.id)
+            }
+            defaultRunBId={experimentRun.id}
+            onCopyRunParameters={handleCopyParams}
+          />
+        </Suspense>
       ) : (
         <>
           {/* 4-Arm Experimental Performance Breakdown Table */}
@@ -290,19 +347,26 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
                           {evalRes?.bleuScore !== undefined ? evalRes.bleuScore.toFixed(3) : '--'}
                         </td>
                         <td className="p-2.5 text-slate-700">
-                          {evalRes?.rougeL !== undefined ? evalRes.rougeL.toFixed(3) : '--'}
+                          {evalRes?.rougeLScore !== undefined
+                            ? evalRes.rougeLScore.toFixed(3)
+                            : '--'}
                         </td>
                         <td className="p-2.5 text-indigo-700 font-bold">
                           {evalRes?.semanticSimilarity !== undefined ? evalRes.semanticSimilarity.toFixed(2) : '--'}
                         </td>
                         <td className="p-2.5 text-emerald-700 font-bold">
-                          {evalRes?.factualityScore !== undefined ? `${evalRes.factualityScore}%` : '--'}
+                          {evalRes?.factuality !== undefined
+                            ? `${evalRes.factuality.factualityScore}%`
+                            : '--'}
                         </td>
                         <td className="p-2.5 text-slate-600">
-                          {res?.actualInputTokens || res?.promptPayload?.exactPromptTokens || '--'}t
+                          {res?.tokens?.totalInputTokens ||
+                            res?.promptPayload?.exactPromptTokens ||
+                            '--'}
+                          t
                         </td>
                         <td className="p-2.5 text-slate-600">
-                          {res?.outputTokens || '--'}t
+                          {res?.tokens?.outputTokens || '--'}t
                         </td>
                         <td className="p-2.5">
                           <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
@@ -429,8 +493,16 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
                       <XAxis dataKey="name" tick={{ fill: '#334155', fontSize: 11, fontWeight: 600 }} />
                       <YAxis domain={[0, 100]} tick={{ fill: '#64748b', fontSize: 11 }} />
                       <Tooltip
-                        formatter={(val: any, _name: any, item: any) => [
-                          `${val} / 100 (${item.payload.role})`,
+                        formatter={(
+                          value: unknown,
+                          _name: unknown,
+                          item: { payload?: { role?: string; n?: number } }
+                        ) => [
+                          `${value} / 100 (${item.payload?.role ?? ''}${
+                            item.payload?.n && item.payload.n > 1
+                              ? `, mean of ${item.payload.n} trials`
+                              : ''
+                          })`,
                           'Quality Score',
                         ]}
                         contentStyle={{ borderRadius: '8px', fontSize: '12px', borderColor: '#cbd5e1' }}
@@ -610,3 +682,9 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
   );
 };
 
+/**
+ * Memoized because this component owns four Recharts surfaces. Without it,
+ * every unrelated parent state change — a toast appearing, a progress tick, a
+ * modal opening — re-rendered all of them.
+ */
+export const EvaluationDashboard = memo(EvaluationDashboardComponent);
