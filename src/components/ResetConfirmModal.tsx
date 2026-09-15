@@ -1,14 +1,38 @@
-import React, { useEffect } from 'react';
-import { RotateCcw, AlertTriangle, X, ArrowRight } from 'lucide-react';
+/**
+ * Reset confirmation dialog.
+ *
+ * WHAT CHANGED
+ * Built on the shared `Modal` primitive, which supplies the focus trap, focus
+ * restoration and backdrop-click handling this dialog previously lacked (it
+ * had Escape and nothing else).
+ *
+ * Two factual bugs are also fixed: the "after reset" summary hardcoded the
+ * target name as `TokenBucket.consume` regardless of what was selected —
+ * ignoring the `currentTargetName` prop it was already given — and it promised
+ * "1 baseline" run afterwards, which described the old seeded fake result that
+ * no longer exists. Reset now genuinely clears everything.
+ */
 
-interface ResetConfirmModalProps {
+import React from 'react';
+import { RotateCcw, AlertTriangle, ArrowRight } from 'lucide-react';
+import { Modal } from './Modal';
+import { BENCHMARK_TARGETS } from '../data/benchmarkTargets';
+
+export interface ResetConfirmModalProps {
   isOpen: boolean;
   onClose: () => void;
   onConfirm: () => void;
   currentTargetName: string;
   currentBudget: number;
+  /** Runs that will be discarded. */
   runCount: number;
 }
+
+/** Values the session returns to. Kept in sync with App's defaults. */
+const RESET_DEFAULTS = {
+  budget: 750,
+  trials: 3,
+} as const;
 
 export const ResetConfirmModal: React.FC<ResetConfirmModalProps> = ({
   isOpen,
@@ -18,116 +42,98 @@ export const ResetConfirmModal: React.FC<ResetConfirmModalProps> = ({
   currentBudget,
   runCount,
 }) => {
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) {
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
+  const defaultTargetName = BENCHMARK_TARGETS[0]?.name ?? 'the first target';
 
   return (
-    <div
-      id="reset-confirm-modal"
-      className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="reset-modal-title"
-    >
-      <div
-        className="bg-white rounded-xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="p-4 sm:p-5 border-b border-slate-100 flex items-start justify-between bg-slate-50">
-          <div className="flex items-center space-x-3">
-            <div className="w-9 h-9 rounded-lg bg-amber-100 border border-amber-200 flex items-center justify-center text-amber-700 shrink-0">
-              <AlertTriangle className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 id="reset-modal-title" className="text-base font-bold text-slate-900">
-                Reset Benchmark Session?
-              </h3>
-              <p className="text-xs text-slate-500">
-                Confirm session restoration to default baseline
-              </p>
-            </div>
-          </div>
-          <button
-            id="close-reset-modal-btn"
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-600 p-1 rounded-md hover:bg-slate-200/60 transition-colors"
-            aria-label="Close modal"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Content */}
-        <div className="p-5 space-y-4 text-xs sm:text-sm text-slate-600">
-          <p className="leading-relaxed">
-            Are you sure you want to reset the current experimental workspace? This action will restore all benchmark configuration parameters and clear trial history.
-          </p>
-
-          <div className="p-3.5 bg-slate-50 rounded-lg border border-slate-200 space-y-2 text-xs font-mono">
-            <div className="flex items-center justify-between text-slate-700 font-sans font-semibold border-b border-slate-200/80 pb-1.5">
-              <span>Configuration State</span>
-              <span>After Reset</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-slate-500 font-sans">Token Budget:</span>
-              <span className="flex items-center space-x-1 text-slate-800">
-                <span>{currentBudget}t</span>
-                <ArrowRight className="w-3 h-3 text-slate-400" />
-                <span className="font-bold text-indigo-700">750t</span>
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-slate-500 font-sans">Target Function:</span>
-              <span className="text-slate-800 font-medium truncate max-w-[180px]">
-                TokenBucket.consume
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-slate-500 font-sans">Session Trials:</span>
-              <span className="flex items-center space-x-1 text-slate-800">
-                <span>{runCount} runs</span>
-                <ArrowRight className="w-3 h-3 text-slate-400" />
-                <span className="font-bold text-slate-900">1 baseline</span>
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Actions */}
-        <div className="p-4 border-t border-slate-100 bg-slate-50 flex items-center justify-end space-x-2.5">
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Reset benchmark session?"
+      maxWidthClass="max-w-md"
+      icon={
+        <span
+          className="w-7 h-7 rounded-lg bg-amber-100 border border-amber-200 flex items-center justify-center text-amber-700 shrink-0"
+          aria-hidden="true"
+        >
+          <AlertTriangle className="w-4 h-4" />
+        </span>
+      }
+      footer={
+        <div className="flex items-center justify-end gap-2.5">
           <button
             id="cancel-reset-btn"
             type="button"
             onClick={onClose}
-            className="px-4 py-2 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-2xs transition-colors"
+            className="px-4 py-2 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer focus:outline-hidden focus-visible:ring-2 focus-visible:ring-slate-400"
           >
             Cancel
           </button>
           <button
             id="confirm-reset-btn"
             type="button"
-            onClick={() => {
-              onConfirm();
-              onClose();
-            }}
-            className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-lg bg-rose-600 text-xs font-bold text-white hover:bg-rose-700 shadow-xs transition-colors"
+            onClick={onConfirm}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-rose-600 text-xs font-bold text-white hover:bg-rose-700 transition-colors cursor-pointer focus:outline-hidden focus-visible:ring-2 focus-visible:ring-rose-700 focus-visible:ring-offset-2"
           >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Reset Session</span>
+            <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+            Reset session
           </button>
         </div>
+      }
+    >
+      <div className="p-5 space-y-4 text-xs sm:text-sm text-slate-600">
+        <p className="leading-relaxed">
+          This restores every run parameter to its default and{' '}
+          <strong className="font-semibold text-slate-900">
+            permanently deletes {runCount === 0 ? 'nothing yet' : `all ${runCount} saved run${runCount === 1 ? '' : 's'}`}
+          </strong>
+          , including the copy stored in this browser. Export your findings first if you need
+          them.
+        </p>
+
+        <div className="p-3.5 bg-slate-50 rounded-lg border border-slate-200 space-y-2 text-xs font-mono">
+          <div className="flex items-center justify-between text-slate-700 font-sans font-semibold border-b border-slate-200/80 pb-1.5">
+            <span>Current</span>
+            <span>After reset</span>
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-slate-500 font-sans shrink-0">Token budget</span>
+            <span className="flex items-center gap-1 text-slate-800">
+              <span>{currentBudget}t</span>
+              <ArrowRight className="w-3 h-3 text-slate-400" aria-hidden="true" />
+              <span className="font-bold text-indigo-700">{RESET_DEFAULTS.budget}t</span>
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-slate-500 font-sans shrink-0">Target function</span>
+            <span className="flex items-center gap-1 text-slate-800 min-w-0">
+              <span className="truncate max-w-[6rem]">{currentTargetName}</span>
+              <ArrowRight className="w-3 h-3 text-slate-400 shrink-0" aria-hidden="true" />
+              <span className="font-bold text-indigo-700 truncate max-w-[6rem]">
+                {defaultTargetName}
+              </span>
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-slate-500 font-sans shrink-0">Saved runs</span>
+            <span className="flex items-center gap-1 text-slate-800">
+              <span>{runCount}</span>
+              <ArrowRight className="w-3 h-3 text-slate-400" aria-hidden="true" />
+              <span className="font-bold text-rose-700">0</span>
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-slate-500 font-sans shrink-0">Trials</span>
+            <span className="flex items-center gap-1 text-slate-800">
+              <ArrowRight className="w-3 h-3 text-slate-400" aria-hidden="true" />
+              <span className="font-bold text-indigo-700">{RESET_DEFAULTS.trials}</span>
+            </span>
+          </div>
+        </div>
       </div>
-    </div>
+    </Modal>
   );
 };

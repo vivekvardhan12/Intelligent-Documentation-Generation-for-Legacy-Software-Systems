@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { ExperimentRun, ContextCondition } from '../types';
+import { ExperimentRun, ContextCondition, DocstringEvaluation } from '../types';
 import {
   ResponsiveContainer,
   BarChart,
@@ -20,24 +20,17 @@ import {
   Scale,
   GitFork,
   History,
-  CheckCircle2,
-  AlertTriangle,
   FileText,
   ChevronDown,
   ChevronUp,
   Cpu,
   Layers,
   Sparkles,
-  Zap,
   Sliders,
   Check,
 } from 'lucide-react';
-import {
-  calculatePctChange,
-  DirectionalTrendArrow,
-  ScoreTrendBadge,
-  ScoreChange,
-} from './HypothesisVerdictCard';
+import { DirectionalTrendArrow, ScoreTrendBadge } from './scoreTrend';
+import { calculatePctChange } from '../utils/scoreChange';
 
 interface RunComparisonViewProps {
   runs: ExperimentRun[];
@@ -211,8 +204,8 @@ export const RunComparisonView: React.FC<RunComparisonViewProps> = ({
   const getRadarValues = (run: ExperimentRun) => {
     if (radarCondition === 'mean') {
       const arms: ContextCondition[] = ['code_only', 'few_shot_control', 'call_graph', 'git_history'];
-      const avg = (fn: (e: any) => number) => {
-        const sum = arms.reduce((acc, arm) => acc + fn(run.results[arm]?.evaluation || {}), 0);
+      const avg = (fn: (e: DocstringEvaluation | undefined) => number) => {
+        const sum = arms.reduce((acc, arm) => acc + fn(run.results[arm]?.evaluation), 0);
         return Math.round((sum / arms.length) * 10);
       };
       const avgBleu = () => {
@@ -220,20 +213,24 @@ export const RunComparisonView: React.FC<RunComparisonViewProps> = ({
         return Math.round(sum / arms.length);
       };
       return {
-        accuracy: avg((e) => e.accuracyScore || 0),
-        paramReturn: avg((e) => e.paramReturnScore || 0),
-        intent: avg((e) => e.intentScore || 0),
-        hallucination: avg((e) => e.hallucinationScore || 0),
+        // `?? 0` on an optional evaluation: an arm with no result contributes
+        // zero to the mean rather than crashing. The arm count is unchanged,
+        // so a failed arm drags the average down — which is why the dashboard
+        // names failed arms explicitly above the charts.
+        accuracy: avg((e) => e?.accuracyScore ?? 0),
+        paramReturn: avg((e) => e?.paramReturnScore ?? 0),
+        intent: avg((e) => e?.intentScore ?? 0),
+        hallucination: avg((e) => e?.hallucinationScore ?? 0),
         bleu: avgBleu(),
       };
     } else {
-      const e = run.results[radarCondition]?.evaluation || {};
+      const e = run.results[radarCondition]?.evaluation;
       return {
-        accuracy: Math.round((e.accuracyScore || 0) * 10),
-        paramReturn: Math.round((e.paramReturnScore || 0) * 10),
-        intent: Math.round((e.intentScore || 0) * 10),
-        hallucination: Math.round((e.hallucinationScore || 0) * 10),
-        bleu: Math.round((e.bleuScore || 0) * 100),
+        accuracy: Math.round((e?.accuracyScore ?? 0) * 10),
+        paramReturn: Math.round((e?.paramReturnScore ?? 0) * 10),
+        intent: Math.round((e?.intentScore ?? 0) * 10),
+        hallucination: Math.round((e?.hallucinationScore ?? 0) * 10),
+        bleu: Math.round((e?.bleuScore ?? 0) * 100),
       };
     }
   };
@@ -714,7 +711,7 @@ export const RunComparisonView: React.FC<RunComparisonViewProps> = ({
                 <XAxis dataKey="condition" tick={{ fill: '#334155', fontSize: 11, fontWeight: 500 }} />
                 <YAxis domain={[0, 100]} tick={{ fill: '#64748b', fontSize: 11 }} />
                 <Tooltip
-                  formatter={(val: any, name: string) => [
+                  formatter={(val: unknown, name: unknown) => [
                     `${val} / 100`,
                     name === 'runA' ? `Run A (${runA.tokenBudget}t)` : `Run B (${runB.tokenBudget}t)`,
                   ]}

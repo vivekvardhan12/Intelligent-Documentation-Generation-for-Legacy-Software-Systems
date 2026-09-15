@@ -1,20 +1,25 @@
-import React from 'react';
-import { ExperimentRun } from '../types';
+import React, { memo } from 'react';
+import { ExperimentRun, PairedDifferenceStats } from '../types';
 import {
+  MIN_TRIALS_FOR_INFERENCE,
+  formatCI,
+  formatPValue,
+  formatStat,
+} from '../utils/statistics';
+import { DemoDataBadge } from './DemoDataBadge';
+import { ScoreTrendBadge, DirectionalTrendArrow } from './scoreTrend';
+import { calculatePctChange } from '../utils/scoreChange';
+import {
+  ArrowUp,
+  ArrowDown,
+  Minus,
   Award,
   AlertTriangle,
   CheckCircle,
-  HelpCircle,
-  ArrowUp,
-  ArrowDown,
   ArrowRight,
-  TrendingUp,
-  TrendingDown,
-  Minus,
   Info,
   Scale,
   Activity,
-  Zap,
   ShieldCheck,
 } from 'lucide-react';
 
@@ -23,102 +28,99 @@ interface HypothesisVerdictCardProps {
   previousRun?: ExperimentRun | null;
 }
 
-export interface ScoreChange {
-  pct: number;
-  formatted: string;
-  rawDelta: number;
-  isPositive: boolean;
-  isNegative: boolean;
-  isFlat: boolean;
-}
-
-export const calculatePctChange = (current: number, previous?: number): ScoreChange | null => {
-  if (previous === undefined || previous === null || previous === 0) return null;
-  const rawDelta = current - previous;
-  const pct = ((current - previous) / previous) * 100;
-  const isPositive = pct > 0.05;
-  const isNegative = pct < -0.05;
-  const isFlat = !isPositive && !isNegative;
-  const formatted = `${isPositive ? '+' : ''}${pct.toFixed(1)}%`;
-  return { pct, formatted, rawDelta, isPositive, isNegative, isFlat };
-};
-
 /**
- * Visual directional trend indicator (up/down colored arrows)
- * Provides immediate feedback on performance drift.
+ * One paired comparison's inferential statistics.
+ *
+ * Renders every statistic through the null-aware formatters in
+ * `utils/statistics`, so a comparison whose sample was too small for inference
+ * shows an explicit explanation rather than blanks, `null`, or — as the
+ * previous code produced — "95% CI [undefined, undefined]".
  */
-export const DirectionalTrendArrow: React.FC<{
-  change: ScoreChange;
-  className?: string;
-  size?: 'xs' | 'sm' | 'md';
-}> = ({ change, className = '', size = 'sm' }) => {
-  const iconSize = size === 'xs' ? 'w-2.5 h-2.5' : size === 'md' ? 'w-3.5 h-3.5' : 'w-3 h-3';
-  const strokeClass = 'stroke-[2.5] shrink-0';
-
-  if (change.isPositive) {
-    return (
-      <ArrowUp
-        className={`${iconSize} text-emerald-600 ${strokeClass} ${className}`}
-        aria-label="Performance gain"
-      />
-    );
-  }
-  if (change.isNegative) {
-    return (
-      <ArrowDown
-        className={`${iconSize} text-rose-600 ${strokeClass} ${className}`}
-        aria-label="Performance drift / degradation"
-      />
-    );
-  }
-  return (
-    <Minus
-      className={`${iconSize} text-slate-400 ${strokeClass} ${className}`}
-      aria-label="Performance parity"
-    />
-  );
-};
-
-export const ScoreTrendBadge: React.FC<{
-  current: number;
-  previous?: number;
-  label?: string;
-  className?: string;
-}> = ({ current, previous, label = 'vs prev run', className = '' }) => {
-  if (previous === undefined || previous === null) return null;
-  const change = calculatePctChange(current, previous);
-  if (!change) return null;
+const PairedComparisonPanel: React.FC<{
+  label: string;
+  accentClass: string;
+  comparison: PairedDifferenceStats;
+}> = ({ label, accentClass, comparison }) => {
+  const isSignificant = comparison.interpretation === 'SIGNIFICANT POSITIVE LIFT';
+  const isInsufficient = comparison.interpretation === 'INSUFFICIENT TRIALS';
 
   return (
-    <div
-      title={previous ? `Previous score: ${previous}/100 → Current: ${current}/100 (${change.formatted} ${label}, ${change.rawDelta >= 0 ? `+${change.rawDelta}` : change.rawDelta} pts)` : undefined}
-      className={`inline-flex items-center space-x-1.5 text-[10px] sm:text-[11px] font-mono font-bold px-2 py-0.5 rounded-md border shadow-2xs transition-all ${
-        change.isPositive
-          ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-          : change.isNegative
-          ? 'bg-rose-50 text-rose-800 border-rose-200'
-          : 'bg-slate-100 text-slate-700 border-slate-200'
-      } ${className}`}
-    >
-      {/* Visual Directional Trend Indicator (Up/Down Colored Arrow) */}
-      <span
-        className={`inline-flex items-center justify-center w-4 h-4 rounded-full shrink-0 ${
-          change.isPositive
-            ? 'bg-emerald-200/80'
-            : change.isNegative
-            ? 'bg-rose-200/80'
-            : 'bg-slate-200'
-        }`}
-      >
-        <DirectionalTrendArrow change={change} size="xs" />
-      </span>
-      <span>{change.formatted}</span>
-      {label && <span className="text-[9px] font-sans font-normal text-slate-500">{label}</span>}
+    <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <span className={`text-xs font-bold ${accentClass}`}>{label}</span>
+        <span
+          className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border shrink-0 text-right ${
+            isSignificant
+              ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
+              : isInsufficient
+                ? 'bg-slate-800 text-slate-300 border-slate-600'
+                : 'bg-amber-950 text-amber-300 border-amber-700'
+          }`}
+        >
+          {comparison.interpretation}
+        </span>
+      </div>
+
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-xl font-bold font-mono text-white">
+          {comparison.meanDifference >= 0 ? '+' : ''}
+          {comparison.meanDifference.toFixed(1)} pts
+        </span>
+        <span className="text-[11px] text-slate-400 font-mono">
+          95% CI {formatCI(comparison.ci95)}
+        </span>
+      </div>
+
+      {isInsufficient ? (
+        /*
+         * No inferential row is drawn at all when the sample cannot support
+         * one. Showing empty statistic rows would imply the tests ran and
+         * came back blank.
+         */
+        <p className="text-[11px] text-slate-400 border-t border-slate-800 pt-2 leading-relaxed">
+          {comparison.inferenceNote ??
+            `Only ${comparison.n} paired trial${comparison.n === 1 ? '' : 's'} available. ` +
+              `At least ${MIN_TRIALS_FOR_INFERENCE} are required before a p-value, confidence ` +
+              `interval or effect size can be reported.`}
+        </p>
+      ) : (
+        <dl className="text-[11px] font-mono text-slate-300 space-y-0.5 border-t border-slate-800 pt-2">
+          <div className="flex justify-between gap-2">
+            <dt className="text-slate-400">Paired t-test</dt>
+            <dd>
+              p = {formatPValue(comparison.pValuetTest)} (t ={' '}
+              {formatStat(comparison.tStatistic)})
+            </dd>
+          </div>
+          <div className="flex justify-between gap-2">
+            <dt className="text-slate-400">Wilcoxon</dt>
+            <dd>
+              p = {formatPValue(comparison.pValueWilcoxon)} (W ={' '}
+              {formatStat(comparison.wStatistic, 1)})
+            </dd>
+          </div>
+          <div className="flex justify-between gap-2 font-bold text-indigo-300">
+            <dt>Holm-adjusted p</dt>
+            <dd>p = {formatPValue(comparison.adjustedPValue)}</dd>
+          </div>
+          <div className="flex justify-between gap-2">
+            <dt className="text-slate-400">Cohen&apos;s d</dt>
+            <dd>
+              d = {formatStat(comparison.effectSizeCohenD)} (r ={' '}
+              {formatStat(comparison.effectSizeWilcoxonR, 2)})
+            </dd>
+          </div>
+          <div className="flex justify-between gap-2">
+            <dt className="text-slate-400">Pairs analysed</dt>
+            <dd>n = {comparison.n}</dd>
+          </div>
+        </dl>
+      )}
     </div>
   );
 };
 
-export const HypothesisVerdictCard: React.FC<HypothesisVerdictCardProps> = ({
+const HypothesisVerdictCardComponent: React.FC<HypothesisVerdictCardProps> = ({
   experimentRun,
   previousRun,
 }) => {
@@ -158,8 +160,9 @@ export const HypothesisVerdictCard: React.FC<HypothesisVerdictCardProps> = ({
         <div>
           <div className="flex items-center space-x-2">
             <Award className="w-5 h-5 text-indigo-600" />
-            <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
-              Scientific Hypothesis Verdict & Confound Isolation
+            <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight flex flex-wrap items-center gap-2">
+              <span>Scientific Hypothesis Verdict &amp; Confound Isolation</span>
+              {experimentRun.isDemoData && <DemoDataBadge size="sm" />}
             </h2>
           </div>
           {previousRun && (
@@ -316,142 +319,30 @@ export const HypothesisVerdictCard: React.FC<HypothesisVerdictCardProps> = ({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {/* Call-Graph Paired Stats */}
-            {(() => {
-              const cg = experimentRun.multiTrialSession.comparisons.callGraphLift;
-              const isSig = cg.interpretation === 'SIGNIFICANT POSITIVE LIFT';
-              return (
-                <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-emerald-400">Call-Graph vs Control</span>
-                    <span
-                      className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border ${
-                        isSig
-                          ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
-                          : 'bg-amber-950 text-amber-300 border-amber-700'
-                      }`}
-                    >
-                      {cg.interpretation}
-                    </span>
-                  </div>
-                  <div className="flex items-baseline space-x-2">
-                    <span className="text-xl font-bold font-mono text-white">
-                      {cg.meanDifference >= 0 ? `+${cg.meanDifference}` : cg.meanDifference} pts
-                    </span>
-                    <span className="text-[11px] text-slate-400 font-mono">
-                      95% CI [{cg.ci95.lower}, {cg.ci95.upper}]
-                    </span>
-                  </div>
-                  <div className="text-[11px] font-mono text-slate-300 space-y-0.5 border-t border-slate-800 pt-2">
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Paired t-test:</span>
-                      <span>p = {cg.pValuetTest} (t = {cg.tStatistic})</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Wilcoxon W:</span>
-                      <span>p = {cg.pValueWilcoxon} (W = {cg.wStatistic})</span>
-                    </div>
-                    <div className="flex justify-between font-bold text-indigo-300">
-                      <span>Holm-Adjusted p:</span>
-                      <span>p = {cg.adjustedPValue}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Cohen's d:</span>
-                      <span>d = {cg.effectSizeCohenD} (r = {cg.effectSizeWilcoxonR})</span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Git-History Paired Stats */}
-            {(() => {
-              const git = experimentRun.multiTrialSession.comparisons.gitHistoryLift;
-              const isSig = git.interpretation === 'SIGNIFICANT POSITIVE LIFT';
-              return (
-                <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-amber-400">Git-History vs Control</span>
-                    <span
-                      className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border ${
-                        isSig
-                          ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
-                          : 'bg-amber-950 text-amber-300 border-amber-700'
-                      }`}
-                    >
-                      {git.interpretation}
-                    </span>
-                  </div>
-                  <div className="flex items-baseline space-x-2">
-                    <span className="text-xl font-bold font-mono text-white">
-                      {git.meanDifference >= 0 ? `+${git.meanDifference}` : git.meanDifference} pts
-                    </span>
-                    <span className="text-[11px] text-slate-400 font-mono">
-                      95% CI [{git.ci95.lower}, {git.ci95.upper}]
-                    </span>
-                  </div>
-                  <div className="text-[11px] font-mono text-slate-300 space-y-0.5 border-t border-slate-800 pt-2">
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Paired t-test:</span>
-                      <span>p = {git.pValuetTest} (t = {git.tStatistic})</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Wilcoxon W:</span>
-                      <span>p = {git.pValueWilcoxon} (W = {git.wStatistic})</span>
-                    </div>
-                    <div className="flex justify-between font-bold text-indigo-300">
-                      <span>Holm-Adjusted p:</span>
-                      <span>p = {git.adjustedPValue}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Cohen's d:</span>
-                      <span>d = {git.effectSizeCohenD} (r = {git.effectSizeWilcoxonR})</span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Length Confound Paired Stats */}
-            {(() => {
-              const len = experimentRun.multiTrialSession.comparisons.lengthEffect;
-              return (
-                <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-indigo-400">Length Effect (Control vs Floor)</span>
-                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-700">
-                      Confound Lift
-                    </span>
-                  </div>
-                  <div className="flex items-baseline space-x-2">
-                    <span className="text-xl font-bold font-mono text-white">
-                      {len.meanDifference >= 0 ? `+${len.meanDifference}` : len.meanDifference} pts
-                    </span>
-                    <span className="text-[11px] text-slate-400 font-mono">
-                      95% CI [{len.ci95.lower}, {len.ci95.upper}]
-                    </span>
-                  </div>
-                  <div className="text-[11px] font-mono text-slate-300 space-y-0.5 border-t border-slate-800 pt-2">
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Paired t-test:</span>
-                      <span>p = {len.pValuetTest} (t = {len.tStatistic})</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Wilcoxon W:</span>
-                      <span>p = {len.pValueWilcoxon} (W = {len.wStatistic})</span>
-                    </div>
-                    <div className="flex justify-between font-bold text-indigo-300">
-                      <span>Holm-Adjusted p:</span>
-                      <span>p = {len.adjustedPValue}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Cohen's d:</span>
-                      <span>d = {len.effectSizeCohenD}</span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
+            {/*
+              One reusable panel replaces three near-identical 45-line blocks.
+              Besides the duplication, each copy carried the same two bugs:
+              it read `ci95.lower` / `ci95.upper` on a `[number, number]`
+              TUPLE — rendering "95% CI [undefined, undefined]" — and it
+              printed p-values, t-statistics and effect sizes without checking
+              whether they existed, so a run with too few trials displayed
+              "p = null". Both are handled centrally now.
+            */}
+            <PairedComparisonPanel
+              label="Call-Graph vs Control"
+              accentClass="text-emerald-400"
+              comparison={experimentRun.multiTrialSession.comparisons.callGraphLift}
+            />
+            <PairedComparisonPanel
+              label="Git-History vs Control"
+              accentClass="text-amber-400"
+              comparison={experimentRun.multiTrialSession.comparisons.gitHistoryLift}
+            />
+            <PairedComparisonPanel
+              label="Length Effect (Control vs Floor)"
+              accentClass="text-indigo-300"
+              comparison={experimentRun.multiTrialSession.comparisons.lengthEffect}
+            />
           </div>
         </div>
       )}
@@ -786,3 +677,6 @@ export const HypothesisVerdictCard: React.FC<HypothesisVerdictCardProps> = ({
     </div>
   );
 };
+
+/** Memoized: this card re-renders a large statistics surface on every update. */
+export const HypothesisVerdictCard = memo(HypothesisVerdictCardComponent);

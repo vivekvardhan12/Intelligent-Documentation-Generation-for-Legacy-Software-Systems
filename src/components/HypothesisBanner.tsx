@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { HelpCircle, ChevronDown, ChevronUp, Scale, Code2, GitCommit, Network, Layers, Sparkles } from 'lucide-react';
+import { HelpCircle, ChevronDown, ChevronUp, Scale, Code2, GitCommit, Network, Layers } from 'lucide-react';
 
 export const HypothesisBanner: React.FC = () => {
   const [isExpanded, setIsExpanded] = useState(false);
