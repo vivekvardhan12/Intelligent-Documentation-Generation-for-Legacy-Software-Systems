@@ -15,14 +15,11 @@ import {
   Tooltip,
   CartesianGrid,
   Cell,
-  LineChart,
-  Line,
 } from 'recharts';
 import {
   BarChart3,
   PieChart,
   Activity,
-  Zap,
   Layers,
   Columns2,
   ArrowLeftRight,
@@ -30,8 +27,6 @@ import {
   Check,
   Scale,
   Coins,
-  ShieldCheck,
-  FileSpreadsheet,
 } from 'lucide-react';
 import { RunComparisonView } from './RunComparisonView';
 
@@ -46,10 +41,10 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
   runHistory,
   onCopyRunParameters,
 }) => {
-  const [viewMode, setViewMode] = useState<'visualizer' | 'comparison' | 'raw_trials'>('visualizer');
+  const [viewMode, setViewMode] = useState<'visualizer' | 'comparison'>('visualizer');
   const [selectedComparisonRunId, setSelectedComparisonRunId] = useState<string | undefined>();
   const [copiedRunId, setCopiedRunId] = useState<string | null>(null);
-  const [activeChartTab, setActiveChartTab] = useState<'radar' | 'bar_ci' | 'paired_trials' | 'token_compliance'>('radar');
+  const [activeChartTab, setActiveChartTab] = useState<'radar' | 'bar_ci' | 'token_compliance'>('radar');
 
   // Consolidate all unique runs including active run and historical trials
   const allRuns = useMemo(() => {
@@ -120,52 +115,29 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
   const barData = [
     {
       name: 'Code Only',
-      score: session?.armStats?.code_only?.mean ?? results.code_only?.evaluation?.overallQuality ?? 0,
-      ciLower: session?.armStats?.code_only?.ci95.lower,
-      ciUpper: session?.armStats?.code_only?.ci95.upper,
+      score: results.code_only?.evaluation?.overallQuality ?? 0,
       color: '#64748b',
       role: 'Baseline Floor',
     },
     {
       name: 'Few-Shot Control',
-      score: session?.armStats?.few_shot_control?.mean ?? results.few_shot_control?.evaluation?.overallQuality ?? 0,
-      ciLower: session?.armStats?.few_shot_control?.ci95.lower,
-      ciUpper: session?.armStats?.few_shot_control?.ci95.upper,
+      score: results.few_shot_control?.evaluation?.overallQuality ?? 0,
       color: '#4f46e5',
       role: 'Length Control',
     },
     {
       name: 'Call-Graph',
-      score: session?.armStats?.call_graph?.mean ?? results.call_graph?.evaluation?.overallQuality ?? 0,
-      ciLower: session?.armStats?.call_graph?.ci95.lower,
-      ciUpper: session?.armStats?.call_graph?.ci95.upper,
+      score: results.call_graph?.evaluation?.overallQuality ?? 0,
       color: '#059669',
       role: 'Structural Context',
     },
     {
       name: 'Git-History',
-      score: session?.armStats?.git_history?.mean ?? results.git_history?.evaluation?.overallQuality ?? 0,
-      ciLower: session?.armStats?.git_history?.ci95.lower,
-      ciUpper: session?.armStats?.git_history?.ci95.upper,
+      score: results.git_history?.evaluation?.overallQuality ?? 0,
       color: '#d97706',
       role: 'Evolutionary Context',
     },
   ];
-
-  // Paired trial differences data across T1..Tn
-  const pairedTrialLineData = useMemo(() => {
-    if (!session?.comparisons) return [];
-    const cgPairs = session.comparisons.callGraphLift.pairs;
-    const gitPairs = session.comparisons.gitHistoryLift.pairs;
-    const lenPairs = session.comparisons.lengthEffect.pairs;
-
-    return cgPairs.map((p, idx) => ({
-      trial: `T${p.trialIndex}`,
-      callGraphLift: p.difference,
-      gitHistoryLift: gitPairs[idx]?.difference ?? 0,
-      lengthEffect: lenPairs[idx]?.difference ?? 0,
-    }));
-  }, [session]);
 
   // Token budget compliance data
   const tokenComplianceData = useMemo(() => {
@@ -197,18 +169,14 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
             <Activity className="w-4 h-4 text-indigo-900" />
             <span>
               {viewMode === 'visualizer'
-                ? 'Multi-Dimensional Analysis & Multi-Trial Statistics'
-                : viewMode === 'raw_trials'
-                ? 'Individual Paired Trial Observations'
+                ? 'Multi-Dimensional Analysis & Benchmark Statistics'
                 : 'Dedicated Side-by-Side Run Comparison'}
             </span>
           </h3>
           <p className="text-xs text-slate-500">
             {viewMode === 'visualizer'
-              ? 'Multi-trial paired statistics (t-test, Wilcoxon, Holm-Bonferroni) and token budget compliance under identical prompt limits.'
-              : viewMode === 'raw_trials'
-              ? 'Raw observation matrix for every paired trial across all four arms.'
-              : 'Direct side-by-side comparative analysis of metrics, dimensional profiles, and docstrings between any two experimental trials.'}
+              ? 'Multi-dimensional criteria scores, experimental arm comparisons, and token budget compliance.'
+              : 'Direct side-by-side comparative analysis of metrics, dimensional profiles, and docstrings between any two experimental runs.'}
           </p>
         </div>
 
@@ -252,27 +220,10 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
               {allRuns.length}
             </span>
           </button>
-          {session?.rawTrials && session.rawTrials.length > 0 && (
-            <button
-              type="button"
-              id="toggle-raw-trials-view"
-              role="tab"
-              aria-selected={viewMode === 'raw_trials'}
-              onClick={() => setViewMode('raw_trials')}
-              className={`inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer ${
-                viewMode === 'raw_trials'
-                  ? 'bg-white text-indigo-950 font-bold shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/50'
-              }`}
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-indigo-600" />
-              <span>Raw Trials ({session.numTrials})</span>
-            </button>
-          )}
         </div>
       </div>
 
-      {/* Conditional View: Active Run Visualizer vs Side-by-Side Comparison vs Raw Trials */}
+      {/* Conditional View: Active Run Visualizer vs Side-by-Side Comparison */}
       {viewMode === 'comparison' ? (
         <RunComparisonView
           runs={allRuns}
@@ -280,225 +231,91 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
           defaultRunBId={experimentRun.id}
           onCopyRunParameters={handleCopyParams}
         />
-      ) : viewMode === 'raw_trials' && session?.rawTrials ? (
-        /* Raw Trials Inspector */
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center space-x-1.5">
-              <FileSpreadsheet className="w-4 h-4 text-indigo-600" />
-              <span>Full Paired Trial Raw Observations ({session.rawTrials.length} entries)</span>
-            </span>
-          </div>
-
-          <div className="overflow-x-auto rounded-lg border border-slate-200 shadow-2xs max-h-96">
-            <table className="w-full text-left text-xs font-mono">
-              <thead className="bg-slate-100 text-slate-700 uppercase text-[10px] font-bold sticky top-0">
-                <tr>
-                  <th className="p-2.5">Trial #</th>
-                  <th className="p-2.5">Pair ID</th>
-                  <th className="p-2.5">Arm Condition</th>
-                  <th className="p-2.5">Blind Candidate ID</th>
-                  <th className="p-2.5">Input Tokens</th>
-                  <th className="p-2.5">Quality Score</th>
-                  <th className="p-2.5">BLEU</th>
-                  <th className="p-2.5">Semantic</th>
-                  <th className="p-2.5">Factuality</th>
-                  <th className="p-2.5">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200 bg-white">
-                {session.rawTrials.map((t, idx) => (
-                  <tr key={idx} className="hover:bg-slate-50">
-                    <td className="p-2.5 font-bold text-slate-800">T{t.trialIndex}</td>
-                    <td className="p-2.5 text-slate-500">{t.pairId}</td>
-                    <td className="p-2.5 font-sans font-bold">
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] ${
-                          t.arm === 'code_only'
-                            ? 'bg-slate-100 text-slate-800'
-                            : t.arm === 'few_shot_control'
-                            ? 'bg-indigo-100 text-indigo-900'
-                            : t.arm === 'call_graph'
-                            ? 'bg-emerald-100 text-emerald-900'
-                            : 'bg-amber-100 text-amber-900'
-                        }`}
-                      >
-                        {t.arm}
-                      </span>
-                    </td>
-                    <td className="p-2.5 text-indigo-700 font-bold">{t.anonymizedCandidateId || 'Blind'}</td>
-                    <td className="p-2.5">{t.tokens.totalInputTokens}t</td>
-                    <td className="p-2.5 font-bold text-slate-900">{t.evaluation?.overallQuality || '--'}</td>
-                    <td className="p-2.5">{(t.evaluation?.bleuScore || 0).toFixed(2)}</td>
-                    <td className="p-2.5">{(t.evaluation?.semanticSimilarity || 0).toFixed(2)}</td>
-                    <td className="p-2.5 font-bold text-emerald-700">
-                      {t.evaluation?.factuality ? `${t.evaluation.factuality.factualityScore}%` : '--'}
-                    </td>
-                    <td className="p-2.5">
-                      <span className="text-emerald-700 font-bold">✓ {t.status}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
       ) : (
         <>
-          {/* Multi-Trial Descriptive Statistics Table */}
-          {session?.armStats && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
-                  <Scale className="w-4 h-4 text-indigo-600" />
-                  <span>Multi-Trial Descriptive Statistics (N = {session.numTrials} Paired Trials):</span>
-                </span>
-                <span className="text-[11px] font-mono text-slate-500">
-                  95% Confidence Intervals | Judge: {session.judgeModel}
-                </span>
-              </div>
-
-              <div className="overflow-x-auto rounded-lg border border-slate-200 shadow-2xs">
-                <table className="w-full text-left text-xs font-mono">
-                  <thead className="bg-slate-100 text-slate-700 uppercase text-[10px] font-bold">
-                    <tr>
-                      <th className="p-2.5">Arm Condition</th>
-                      <th className="p-2.5">Mean Quality</th>
-                      <th className="p-2.5">Median</th>
-                      <th className="p-2.5">Std Dev</th>
-                      <th className="p-2.5">95% CI</th>
-                      <th className="p-2.5">BLEU</th>
-                      <th className="p-2.5">ROUGE-L</th>
-                      <th className="p-2.5">Semantic Sim</th>
-                      <th className="p-2.5">Factuality</th>
-                      <th className="p-2.5">Input Tokens</th>
-                      <th className="p-2.5">Compliance</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200 bg-white">
-                    {(['code_only', 'few_shot_control', 'call_graph', 'git_history'] as ContextCondition[]).map((cond) => {
-                      const stats = session.armStats[cond];
-                      if (!stats) return null;
-                      return (
-                        <tr key={cond} className="hover:bg-slate-50">
-                          <td className="p-2.5 font-sans font-bold text-slate-900">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] ${
-                                cond === 'code_only'
-                                  ? 'bg-slate-100 text-slate-800'
-                                  : cond === 'few_shot_control'
-                                  ? 'bg-indigo-100 text-indigo-900'
-                                  : cond === 'call_graph'
-                                  ? 'bg-emerald-100 text-emerald-900'
-                                  : 'bg-amber-100 text-amber-900'
-                              }`}
-                            >
-                              {stats.title}
-                            </span>
-                          </td>
-                          <td className="p-2.5 font-bold text-slate-900 text-sm">
-                            {stats.mean} <span className="text-[10px] font-normal text-slate-500">/ 100</span>
-                          </td>
-                          <td className="p-2.5 text-slate-700">{stats.median}</td>
-                          <td className="p-2.5 text-slate-600">±{stats.sd}</td>
-                          <td className="p-2.5 font-bold text-indigo-900">
-                            [{stats.ci95.lower}, {stats.ci95.upper}]
-                          </td>
-                          <td className="p-2.5 text-slate-700">{stats.meanBLEU}</td>
-                          <td className="p-2.5 text-slate-700">{stats.meanROUGEL}</td>
-                          <td className="p-2.5 text-indigo-700 font-bold">{stats.meanSemantic}</td>
-                          <td className="p-2.5 text-emerald-700 font-bold">{stats.meanFactuality}%</td>
-                          <td className="p-2.5 text-slate-600">{stats.meanInputTokens}t</td>
-                          <td className="p-2.5">
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                              {stats.meanCompliancePct}%
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+          {/* 4-Arm Experimental Performance Breakdown Table */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
+                <Scale className="w-4 h-4 text-indigo-600" />
+                <span>4-Arm Experimental Performance Breakdown:</span>
+              </span>
+              <span className="text-[11px] font-mono text-slate-500">
+                Evaluation Criteria & Docstring Metrics
+              </span>
             </div>
-          )}
 
-          {/* Paired Hypothesis Differences Table */}
-          {session?.comparisons && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                  <span>Paired Hypothesis Comparisons & Holm-Bonferroni Corrections (FWER):</span>
-                </span>
-                <span className="text-[11px] font-mono text-slate-500">
-                  Step-Down Correction Threshold α = 0.05
-                </span>
-              </div>
-
-              <div className="overflow-x-auto rounded-lg border border-slate-200 shadow-2xs">
-                <table className="w-full text-left text-xs font-mono">
-                  <thead className="bg-slate-100 text-slate-700 uppercase text-[10px] font-bold">
-                    <tr>
-                      <th className="p-2.5">Hypothesis Comparison</th>
-                      <th className="p-2.5">Mean Diff</th>
-                      <th className="p-2.5">95% CI</th>
-                      <th className="p-2.5">Paired t-test</th>
-                      <th className="p-2.5">Wilcoxon W</th>
-                      <th className="p-2.5">Holm-Adj p</th>
-                      <th className="p-2.5">Cohen's d</th>
-                      <th className="p-2.5">Interpretation</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200 bg-white">
-                    {[session.comparisons.callGraphLift, session.comparisons.gitHistoryLift, session.comparisons.lengthEffect].map(
-                      (comp) => {
-                        const isSig = comp.interpretation === 'SIGNIFICANT POSITIVE LIFT';
-                        return (
-                          <tr key={comp.id} className="hover:bg-slate-50">
-                            <td className="p-2.5 font-sans font-bold text-slate-900">{comp.label}</td>
-                            <td className="p-2.5 font-bold text-sm">
-                              <span className={comp.meanDifference >= 0 ? 'text-emerald-700' : 'text-rose-700'}>
-                                {comp.meanDifference >= 0 ? `+${comp.meanDifference}` : comp.meanDifference} pts
-                              </span>
-                            </td>
-                            <td className="p-2.5 text-indigo-900 font-bold">
-                              [{comp.ci95.lower}, {comp.ci95.upper}]
-                            </td>
-                            <td className="p-2.5 text-slate-700">
-                              p = {comp.pValuetTest} (t = {comp.tStatistic})
-                            </td>
-                            <td className="p-2.5 text-slate-700">
-                              p = {comp.pValueWilcoxon} (W = {comp.wStatistic})
-                            </td>
-                            <td className="p-2.5 font-black text-indigo-900 text-sm">
-                              p = {comp.adjustedPValue}
-                            </td>
-                            <td className="p-2.5 text-slate-800">
-                              d = {comp.effectSizeCohenD} (r = {comp.effectSizeWilcoxonR})
-                            </td>
-                            <td className="p-2.5">
-                              <span
-                                className={`px-2 py-0.5 rounded text-[10px] font-sans font-bold border ${
-                                  isSig
-                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                    : comp.interpretation === 'POSITIVE BUT NOT STATISTICALLY SIGNIFICANT'
-                                    ? 'bg-amber-100 text-amber-800 border-amber-300'
-                                    : 'bg-slate-100 text-slate-800 border-slate-300'
-                                }`}
-                              >
-                                {comp.interpretation}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      }
-                    )}
-                  </tbody>
-                </table>
-              </div>
+            <div className="overflow-x-auto rounded-lg border border-slate-200 shadow-2xs">
+              <table className="w-full text-left text-xs font-mono">
+                <thead className="bg-slate-100 text-slate-700 uppercase text-[10px] font-bold">
+                  <tr>
+                    <th className="p-2.5">Arm Condition</th>
+                    <th className="p-2.5">Quality Score</th>
+                    <th className="p-2.5">BLEU</th>
+                    <th className="p-2.5">ROUGE-L</th>
+                    <th className="p-2.5">Semantic Sim</th>
+                    <th className="p-2.5">Factuality</th>
+                    <th className="p-2.5">Input Tokens</th>
+                    <th className="p-2.5">Output Tokens</th>
+                    <th className="p-2.5">Compliance</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 bg-white">
+                  {(['code_only', 'few_shot_control', 'call_graph', 'git_history'] as ContextCondition[]).map((cond) => {
+                    const res = results[cond];
+                    const evalRes = res?.evaluation;
+                    const qualScore = evalRes?.overallQuality ?? 0;
+                    return (
+                      <tr key={cond} className="hover:bg-slate-50">
+                        <td className="p-2.5 font-sans font-bold text-slate-900">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] ${
+                              cond === 'code_only'
+                                ? 'bg-slate-100 text-slate-800'
+                                : cond === 'few_shot_control'
+                                ? 'bg-indigo-100 text-indigo-900'
+                                : cond === 'call_graph'
+                                ? 'bg-emerald-100 text-emerald-900'
+                                : 'bg-amber-100 text-amber-900'
+                            }`}
+                          >
+                            {res?.title || cond}
+                          </span>
+                        </td>
+                        <td className="p-2.5 font-bold text-slate-900 text-sm">
+                          {qualScore > 0 ? qualScore : '--'}{' '}
+                          <span className="text-[10px] font-normal text-slate-500">/ 100</span>
+                        </td>
+                        <td className="p-2.5 text-slate-700">
+                          {evalRes?.bleuScore !== undefined ? evalRes.bleuScore.toFixed(3) : '--'}
+                        </td>
+                        <td className="p-2.5 text-slate-700">
+                          {evalRes?.rougeL !== undefined ? evalRes.rougeL.toFixed(3) : '--'}
+                        </td>
+                        <td className="p-2.5 text-indigo-700 font-bold">
+                          {evalRes?.semanticSimilarity !== undefined ? evalRes.semanticSimilarity.toFixed(2) : '--'}
+                        </td>
+                        <td className="p-2.5 text-emerald-700 font-bold">
+                          {evalRes?.factualityScore !== undefined ? `${evalRes.factualityScore}%` : '--'}
+                        </td>
+                        <td className="p-2.5 text-slate-600">
+                          {res?.actualInputTokens || res?.promptPayload?.exactPromptTokens || '--'}t
+                        </td>
+                        <td className="p-2.5 text-slate-600">
+                          {res?.outputTokens || '--'}t
+                        </td>
+                        <td className="p-2.5">
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                            {res?.tokens?.compliancePercentage ?? 100}%
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          )}
+          </div>
 
           {/* Interactive Multi-Tab Visual Charts */}
           <div className="space-y-3 pt-2">
@@ -524,21 +341,8 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
                       : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                   }`}
                 >
-                  Quality Score (95% CI)
+                  Quality Scores
                 </button>
-                {pairedTrialLineData.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setActiveChartTab('paired_trials')}
-                    className={`px-3 py-1.5 rounded-md font-bold transition-all cursor-pointer ${
-                      activeChartTab === 'paired_trials'
-                        ? 'bg-indigo-900 text-white'
-                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    Paired Trial Lift (T1..Tn)
-                  </button>
-                )}
                 <button
                   type="button"
                   onClick={() => setActiveChartTab('token_compliance')}
@@ -608,13 +412,13 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
               </div>
             )}
 
-            {/* Tab 2: Quality Score Bar Chart with 95% CI */}
+            {/* Tab 2: Quality Score Bar Chart */}
             {activeChartTab === 'bar_ci' && (
               <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
                     <BarChart3 className="w-3.5 h-3.5 text-indigo-600" />
-                    <span>Mean Composite Quality Score with 95% Confidence Intervals</span>
+                    <span>Overall Composite Quality Score (4 Arms)</span>
                   </span>
                 </div>
 
@@ -626,8 +430,8 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
                       <YAxis domain={[0, 100]} tick={{ fill: '#64748b', fontSize: 11 }} />
                       <Tooltip
                         formatter={(val: any, _name: any, item: any) => [
-                          `${val} / 100 (95% CI [${item.payload.ciLower ?? '--'}, ${item.payload.ciUpper ?? '--'}])`,
-                          'Mean Quality',
+                          `${val} / 100 (${item.payload.role})`,
+                          'Quality Score',
                         ]}
                         contentStyle={{ borderRadius: '8px', fontSize: '12px', borderColor: '#cbd5e1' }}
                       />
@@ -642,59 +446,7 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
               </div>
             )}
 
-            {/* Tab 3: Paired Trial Diffs Plot */}
-            {activeChartTab === 'paired_trials' && pairedTrialLineData.length > 0 && (
-              <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
-                    <Activity className="w-3.5 h-3.5 text-indigo-600" />
-                    <span>Paired Trial Delta Lift Trajectory across Trials (T1..Tn)</span>
-                  </span>
-                </div>
-
-                <div className="h-72 w-full text-xs">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={pairedTrialLineData} margin={{ top: 20, right: 25, left: -10, bottom: 20 }}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                      <XAxis dataKey="trial" tick={{ fill: '#334155', fontSize: 11, fontWeight: 600 }} />
-                      <YAxis tick={{ fill: '#64748b', fontSize: 11 }} />
-                      <Tooltip
-                        formatter={(val: any) => [`${val >= 0 ? '+' : ''}${val} pts`, 'Score Delta']}
-                        contentStyle={{ borderRadius: '8px', fontSize: '12px', borderColor: '#cbd5e1' }}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="callGraphLift"
-                        name="Call-Graph Lift (vs Control)"
-                        stroke="#059669"
-                        strokeWidth={2.5}
-                        dot={{ r: 4 }}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="gitHistoryLift"
-                        name="Git-History Lift (vs Control)"
-                        stroke="#d97706"
-                        strokeWidth={2.5}
-                        dot={{ r: 4 }}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="lengthEffect"
-                        name="Length Effect (Control vs Floor)"
-                        stroke="#4f46e5"
-                        strokeWidth={2}
-                        strokeDasharray="4 4"
-                        dot={{ r: 3 }}
-                      />
-                      <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            )}
-
-            {/* Tab 4: Token Budget Compliance */}
+            {/* Tab 3: Token Budget Compliance */}
             {activeChartTab === 'token_compliance' && (
               <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200 space-y-2">
                 <div className="flex items-center justify-between">
@@ -757,7 +509,7 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
                   <Layers className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Session Trial History ({allRuns.length} runs recorded):</span>
+                  <span>Session Benchmark History ({allRuns.length} runs recorded):</span>
                 </span>
                 <button
                   type="button"

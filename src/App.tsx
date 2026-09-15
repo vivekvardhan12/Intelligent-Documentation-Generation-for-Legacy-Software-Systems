@@ -309,9 +309,7 @@ export default function App() {
   const [tokenBudget, setTokenBudget] = useState<number>(750);
   const [temperature, setTemperature] = useState<number>(0.2);
   const [modelName, setModelName] = useState<string>('gemini-3.7-flash');
-  const [numTrials, setNumTrials] = useState<number>(3);
   const [judgeModel, setJudgeModel] = useState<string>('gemini-3.7-flash');
-  const [activeTrial, setActiveTrial] = useState<number>(1);
 
   // Benchmark execution state
   const [isRunning, setIsRunning] = useState<boolean>(false);
@@ -385,11 +383,10 @@ export default function App() {
     }));
   }, [promptPayloads]);
 
-  // Execute the 4-Arm Isolation Benchmark (Supporting multi-trial runs with Holm-Bonferroni correction)
+  // Execute the 4-Arm Isolation Benchmark (Single run at a time)
   const handleRunBenchmark = async () => {
     setIsRunning(true);
     setCurrentStep('generating');
-    setActiveTrial(1);
 
     // Set generating status on cards
     setResults((prev) => ({
@@ -403,12 +400,11 @@ export default function App() {
       const session = await MultiTrialRunner.runExperimentSession({
         target: selectedTarget,
         tokenBudget,
-        numTrials,
+        numTrials: 1,
         modelName,
         temperature,
         judgeModel,
-        onProgress: (trial, total, phase) => {
-          setActiveTrial(trial);
+        onProgress: (_trial, _total, phase) => {
           setCurrentStep(phase === 'generating' ? 'generating' : 'evaluating');
         },
       });
@@ -430,7 +426,6 @@ export default function App() {
     setTokenBudget(750);
     setTemperature(0.2);
     setModelName('gemini-3.7-flash');
-    setNumTrials(3);
     setJudgeModel('gemini-3.7-flash');
     setResults(getDefaultResults());
     const initialRun = getInitialBaselineRun();
@@ -443,9 +438,6 @@ export default function App() {
     setTokenBudget(run.tokenBudget);
     setTemperature(run.temperature);
     setModelName(run.modelName);
-    if (run.multiTrialSession?.numTrials) {
-      setNumTrials(run.multiTrialSession.numTrials);
-    }
     if (run.multiTrialSession?.judgeModel) {
       setJudgeModel(run.multiTrialSession.judgeModel);
     }
@@ -530,12 +522,8 @@ export default function App() {
           onTemperatureChange={(t) => setTemperature(t)}
           model={modelName}
           onModelChange={(m) => setModelName(m)}
-          numTrials={numTrials}
-          onNumTrialsChange={(n) => setNumTrials(n)}
           judgeModel={judgeModel}
           onJudgeModelChange={(jm) => setJudgeModel(jm)}
-          activeTrial={activeTrial}
-          totalTrials={numTrials}
           promptPayloads={promptPayloads}
           isRunning={isRunning}
           onRunBenchmark={handleRunBenchmark}

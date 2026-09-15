@@ -164,7 +164,7 @@ export const HypothesisVerdictCard: React.FC<HypothesisVerdictCardProps> = ({
           </div>
           {previousRun && (
             <p className="text-xs text-slate-500 mt-0.5 flex items-center space-x-1.5 font-sans">
-              <span>Comparing against prior trial:</span>
+              <span>Comparing against prior run:</span>
               <span className="font-semibold text-slate-700">{previousRun.targetName} ({prevBudget} tokens)</span>
             </p>
           )}
