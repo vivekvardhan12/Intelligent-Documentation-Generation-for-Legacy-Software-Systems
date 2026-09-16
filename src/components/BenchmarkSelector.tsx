@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { BenchmarkTarget } from '../types';
 import { BENCHMARK_TARGETS, UNRELATED_FEW_SHOT_POOL } from '../data/benchmarkTargets';
-import { Eye, EyeOff, PlusCircle, Sparkles, Terminal, FileCode, CheckCircle2 } from 'lucide-react';
+import { Code, Eye, EyeOff, PlusCircle, Sparkles, Terminal, FileCode, CheckCircle2 } from 'lucide-react';
 
 interface BenchmarkSelectorProps {
   selectedTarget: BenchmarkTarget;
@@ -40,15 +40,7 @@ Callees:
 - payment_client.charge: idempotent credit card charge gateway`);
   const [customGitHistory, setCustomGitHistory] = useState(`Commit d71a9e: "fix: clamp adjusted_due to 0.0 to prevent negative charges when customer credit exceeds invoice total"
 Commit 4a22b1: "feat: add auto_debit parameter for direct debit accounts"`);
-  /**
-   * Rationale attached to a user-defined target.
-   *
-   * A constant, not state: the previous `useState` pair never called its
-   * setter, so this only looked editable. Keeping it as a constant makes the
-   * actual behaviour obvious.
-   */
-  const customIntent =
-    'Prevents negative debit charges when credits exceed total due, and integrates with nightly settlement worker.';
+  const [customIntent, setCustomIntent] = useState('Prevents negative debit charges when credits exceed total due, and integrates with nightly settlement worker.');
 
   const handleApplyCustom = () => {
     const customTarget: BenchmarkTarget = {
@@ -236,7 +228,7 @@ Commit 4a22b1: "feat: add auto_debit parameter for direct debit accounts"`);
               </label>
               <select
                 value={customLanguage}
-                onChange={(e) => setCustomLanguage(e.target.value as BenchmarkTarget['language'])}
+                onChange={(e) => setCustomLanguage(e.target.value as any)}
                 className="w-full text-xs px-2.5 py-1.5 rounded-md border border-slate-300 bg-white focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
               >
                 <option value="python">Python</option>

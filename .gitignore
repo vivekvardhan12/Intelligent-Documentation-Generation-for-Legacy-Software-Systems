@@ -6,6 +6,3 @@ coverage/
 *.log
 .env*
 !.env.example
-
-# npm lockfile — this project uses bun (see bun.lock)
-package-lock.json

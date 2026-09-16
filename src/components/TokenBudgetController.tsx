@@ -1,616 +1,396 @@
-/**
- * Run parameter controller: token budget, trials, models, temperature, cost.
- *
- * WHAT CHANGED AND WHY
- *
- * 1. TRIAL COUNT IS NOW EXPOSED. This is the single most consequential change
- *    in the UI. The runner has always accepted `numTrials`, but the app passed
- *    a hardcoded 1 — so the paired t-tests, Wilcoxon tests and Holm correction
- *    could never yield a result, and every verdict rested on one observation.
- *    The control carries inline guidance about what each count buys.
- *
- * 2. THE SLIDER COMMITS ON RELEASE. Dragging it previously fired a state update
- *    per step, and each update rebuilt all four prompt payloads (running the
- *    token heuristic over every context block) AND re-rendered four Recharts
- *    canvases below. The handle now updates a local draft while dragging and
- *    commits once on release, so the expensive work happens once per settled
- *    value instead of ~8 times per drag.
- *
- * 3. THE COST ESTIMATE IS HONEST. It previously counted only the four
- *    generation calls, ignoring the blind-judge call (the largest prompt in the
- *    run), the four factuality checks and the embedding call — and never
- *    multiplied by the trial count. See `src/config/pricing.ts`.
- */
+import React, { useState, useMemo } from 'react';
+import { ConditionPromptPayload, ContextCondition } from '../types';
+import { Play, Sliders, CheckSquare, Layers, Clock, Zap, ArrowRight, Coins, Info, HelpCircle } from 'lucide-react';
 
-import React, { memo, useMemo, useState } from 'react';
-import { BenchmarkTarget, ConditionPromptPayload, ContextCondition } from '../types';
-import { Play, Sliders, Layers, Coins, Repeat, Info } from 'lucide-react';
-import { GEMINI_MODELS } from '../config/models';
-import { estimateSessionCost, formatINR, USD_TO_INR, estimateTokenCount } from '../config/pricing';
-import { MIN_TRIALS_FOR_INFERENCE } from '../utils/statistics';
-
-export interface TokenBudgetControllerProps {
+interface TokenBudgetControllerProps {
   tokenBudget: number;
   onBudgetChange: (budget: number) => void;
   temperature: number;
-  onTemperatureChange: (temperature: number) => void;
+  onTemperatureChange: (temp: number) => void;
   model: string;
   onModelChange: (model: string) => void;
-  judgeModel: string;
-  onJudgeModelChange: (judgeModel: string) => void;
-  numTrials: number;
-  onNumTrialsChange: (numTrials: number) => void;
+  judgeModel?: string;
+  onJudgeModelChange?: (judgeModel: string) => void;
   promptPayloads: Record<ContextCondition, ConditionPromptPayload>;
-  target: BenchmarkTarget;
   isRunning: boolean;
   onRunBenchmark: () => void;
-  /** Live status text while a run is in flight. */
-  progressMessage?: string;
+  currentStep: 'idle' | 'generating' | 'evaluating' | 'completed';
 }
 
-/** Selectable context budgets, in tokens. */
-const BUDGET_PRESETS = [250, 500, 750, 1000, 1500, 2000] as const;
+interface ModelPricingConfig {
+  inputPerMillionUSD: number;
+  outputPerMillionUSD: number;
+  displayName: string;
+}
 
-/** Selectable trial counts, with the statistical consequence of each. */
-const TRIAL_OPTIONS: { value: number; label: string; hint: string }[] = [
-  {
-    value: 1,
-    label: '1',
-    hint: 'Single pass. Descriptive only — no p-values or confidence intervals can be computed.',
-  },
-  {
-    value: 3,
-    label: '3',
-    hint: 'Minimum for a significance test. Wide confidence intervals; treat results as provisional.',
-  },
-  {
-    value: 5,
-    label: '5',
-    hint: 'Recommended. Enough for the t-test and the rank test to agree on a clear effect.',
-  },
-  {
-    value: 10,
-    label: '10',
-    hint: 'Strongest evidence available here, at roughly ten times the cost and runtime.',
-  },
-];
+// 1 USD ≈ 87.0 INR (standard exchange rate)
+const USD_TO_INR = 87.0;
 
-/** Temperature presets. */
-const TEMPERATURE_OPTIONS = [
-  { value: 0.0, label: '0.0 (Deterministic)' },
-  { value: 0.2, label: '0.2 (Recommended)' },
-  { value: 0.5, label: '0.5 (Balanced)' },
-  { value: 0.7, label: '0.7 (Exploratory)' },
-  { value: 1.0, label: '1.0 (High variance)' },
-];
-
-/** The four arms, in display order. */
-const ARM_ORDER: ContextCondition[] = [
-  'code_only',
-  'few_shot_control',
-  'call_graph',
-  'git_history',
-];
-
-/** Per-arm colour scheme for the allocation cards. */
-const ARM_STYLES: Record<ContextCondition, { card: string; bar: string }> = {
-  code_only: { card: 'bg-slate-50 border-slate-200', bar: 'bg-slate-600' },
-  few_shot_control: { card: 'bg-indigo-50/50 border-indigo-200', bar: 'bg-indigo-600' },
-  call_graph: { card: 'bg-emerald-50/50 border-emerald-200', bar: 'bg-emerald-600' },
-  git_history: { card: 'bg-amber-50/50 border-amber-200', bar: 'bg-amber-500' },
+const MODEL_PRICING: Record<string, ModelPricingConfig> = {
+  'gemini-3.7-flash': {
+    inputPerMillionUSD: 0.10, // $0.10 per 1M prompt tokens (~₹8.70/M)
+    outputPerMillionUSD: 0.40, // $0.40 per 1M output tokens (~₹34.80/M)
+    displayName: 'Gemini 3.7 Flash',
+  },
+  'gemini-3.1-flash-lite': {
+    inputPerMillionUSD: 0.075, // $0.075 per 1M prompt tokens (~₹6.53/M)
+    outputPerMillionUSD: 0.30, // $0.30 per 1M output tokens (~₹26.10/M)
+    displayName: 'Gemini 3.1 Flash-Lite',
+  },
 };
 
-const TokenBudgetControllerComponent: React.FC<TokenBudgetControllerProps> = ({
+const DEFAULT_PRICING: ModelPricingConfig = {
+  inputPerMillionUSD: 0.10,
+  outputPerMillionUSD: 0.40,
+  displayName: 'Gemini Flash',
+};
+
+export const TokenBudgetController: React.FC<TokenBudgetControllerProps> = ({
   tokenBudget,
   onBudgetChange,
   temperature,
   onTemperatureChange,
   model,
   onModelChange,
-  judgeModel,
+  judgeModel = 'gemini-3.7-flash',
   onJudgeModelChange,
-  numTrials,
-  onNumTrialsChange,
   promptPayloads,
-  target,
   isRunning,
   onRunBenchmark,
-  progressMessage,
+  currentStep,
 }) => {
-  const [showCostBreakdown, setShowCostBreakdown] = useState(false);
+  const [showPromptInspector, setShowPromptInspector] = useState(false);
+  const [showCostBreakdownModal, setShowCostBreakdownModal] = useState(false);
 
-  /**
-   * Draft slider value, updated continuously while dragging.
-   *
-   * The committed value (`tokenBudget`) is what drives prompt construction, so
-   * the expensive rebuild happens on release rather than on every step.
-   */
-  const [draftBudget, setDraftBudget] = useState(tokenBudget);
-  const [lastSeenBudget, setLastSeenBudget] = useState(tokenBudget);
+  const budgetOptions = [250, 500, 750, 1000, 1500, 2000];
 
-  // Sync the draft when the committed value changes from outside (for example
-  // when a historical run's parameters are copied in). Adjusting state during
-  // render is React's recommended alternative to a syncing effect — it avoids
-  // the extra render pass an effect would cause.
-  if (tokenBudget !== lastSeenBudget) {
-    setLastSeenBudget(tokenBudget);
-    setDraftBudget(tokenBudget);
-  }
+  const pricing = MODEL_PRICING[model] || DEFAULT_PRICING;
 
-  const hasUncommittedBudget = draftBudget !== tokenBudget;
+  // 4 concurrent conditions
+  const conditions: ContextCondition[] = ['code_only', 'few_shot_control', 'call_graph', 'git_history'];
 
-  /** Commits the dragged value, triggering the prompt rebuild exactly once. */
-  const commitBudget = () => {
-    if (draftBudget !== tokenBudget) onBudgetChange(draftBudget);
-  };
+  // Token consumption metrics per arm
+  const armMetrics = useMemo(() => {
+    return conditions.map((cond) => {
+      const payload = promptPayloads[cond];
+      const promptTok = payload?.exactPromptTokens || 0;
+      const targetTok = payload?.targetCodeTokensAllocated || 0;
+      const ctxTok = payload?.contextTokensAllocated || 0;
+      // An average generated docstring is ~75 output tokens
+      const estOutputTok = 75;
+      const totalArmTok = promptTok + estOutputTok;
 
-  /**
-   * The budget actually applied, which may be below what the user requested.
-   *
-   * A target's call graph and commit history are finite. Once the requested
-   * budget exceeds what they can supply, the effective budget is capped so the
-   * arms stay length-matched — see `buildConditionPrompts`. Showing only the
-   * requested figure would claim a 2000-token budget while delivering a few
-   * hundred, and would hide the fact that raising the slider further does
-   * nothing for this target.
-   */
-  const effectiveBudget = promptPayloads.call_graph?.tokenBudget ?? tokenBudget;
-  const budgetLimitedBy = promptPayloads.call_graph?.budgetLimitedBy;
-  const isBudgetCapped = budgetLimitedBy !== undefined;
+      // Cost calculation in USD and INR (Rupees)
+      const armInputCostUSD = (promptTok * pricing.inputPerMillionUSD) / 1_000_000;
+      const armOutputCostUSD = (estOutputTok * pricing.outputPerMillionUSD) / 1_000_000;
+      const armTotalCostUSD = armInputCostUSD + armOutputCostUSD;
+      const armCostINR = armTotalCostUSD * USD_TO_INR;
 
-  /** Per-arm token allocation for the preview cards. */
-  const armMetrics = useMemo(
-    () =>
-      ARM_ORDER.map((condition) => {
-        const payload = promptPayloads[condition];
-        return {
-          condition,
-          title: payload?.title ?? condition,
-          promptTokens: payload?.exactPromptTokens ?? 0,
-          targetTokens: payload?.targetCodeTokensAllocated ?? 0,
-          contextTokens: payload?.contextTokensAllocated ?? 0,
-        };
-      }),
-    [promptPayloads]
-  );
+      return {
+        condition: cond,
+        title: payload?.title || cond,
+        promptTok,
+        targetTok,
+        ctxTok,
+        estOutputTok,
+        totalArmTok,
+        armCostINR,
+        armTotalCostUSD,
+      };
+    });
+  }, [promptPayloads, pricing]);
 
-  /**
-   * Full-session cost projection across all nine calls per trial.
-   *
-   * Recomputed when the budget, models or trial count change — not on every
-   * render — because it walks the prompt payloads.
-   */
-  const costEstimate = useMemo(
-    () =>
-      estimateSessionCost({
-        armPromptTokens: armMetrics.map((arm) => arm.promptTokens),
-        targetCodeTokens: estimateTokenCount(target.targetCode),
-        referenceDocstringTokens: estimateTokenCount(target.referenceDocstring),
-        armContextTokens: armMetrics.map((arm) => arm.contextTokens),
-        model,
-        judgeModel,
-        numTrials,
-      }),
-    [armMetrics, target, model, judgeModel, numTrials]
-  );
+  // Aggregate consumption across the four concurrent prompt requests (single run)
+  const totalPromptTokens = useMemo(() => {
+    return armMetrics.reduce((sum, arm) => sum + arm.promptTok, 0);
+  }, [armMetrics]);
 
-  const selectedTrialOption =
-    TRIAL_OPTIONS.find((option) => option.value === numTrials) ?? TRIAL_OPTIONS[1];
+  const totalOutputTokens = useMemo(() => {
+    return armMetrics.reduce((sum, arm) => sum + arm.estOutputTok, 0);
+  }, [armMetrics]);
 
-  const belowInferenceThreshold = numTrials < MIN_TRIALS_FOR_INFERENCE;
+  const totalCombinedTokens = totalPromptTokens + totalOutputTokens;
+
+  // Aggregate cost calculations in USD and Rupees (₹) for a single benchmark run
+  const totalPromptCostUSD = (totalPromptTokens * pricing.inputPerMillionUSD) / 1_000_000;
+  const totalOutputCostUSD = (totalOutputTokens * pricing.outputPerMillionUSD) / 1_000_000;
+  const singleRunCostUSD = totalPromptCostUSD + totalOutputCostUSD;
+
+  // Cost in Indian Rupees (₹)
+  const singleRunCostINR = singleRunCostUSD * USD_TO_INR;
+  const totalPromptCostINR = totalPromptCostUSD * USD_TO_INR;
+  const totalOutputCostINR = totalOutputCostUSD * USD_TO_INR;
+
+  // Approximate runs achievable per ₹1.00 spent
+  const runsPerRupee = singleRunCostINR > 0 ? Math.floor(1 / singleRunCostINR) : 0;
 
   return (
-    <section
-      id="token-budget-controller"
-      className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5 space-y-4"
-      aria-label="Run parameters"
-    >
-      <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
-        {/* Token budget */}
-        <div className="space-y-2 flex-1 min-w-0 lg:max-w-md">
-          <div className="flex items-center justify-between gap-2">
+    <div id="token-budget-controller" className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5 space-y-4">
+      {/* Top Controller Bar */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        {/* Left: Token Budget Control */}
+        <div className="space-y-2 flex-1 max-w-xl">
+          <div className="flex items-center justify-between">
             <div className="flex items-center space-x-2">
-              <Sliders className="w-4 h-4 text-indigo-900" aria-hidden="true" />
-              <label
-                htmlFor="token-budget-range"
-                className="text-xs font-bold uppercase tracking-widest text-slate-500"
-              >
-                Fixed context token budget
+              <Sliders className="w-4 h-4 text-indigo-900" />
+              <label htmlFor="token-budget-range" className="text-xs font-bold uppercase tracking-widest text-slate-500">
+                Fixed Context Token Budget
               </label>
             </div>
-            <span
-              className="text-xs font-mono font-bold px-2.5 py-1 rounded-md bg-indigo-900 text-white"
-              title={
-                isBudgetCapped
-                  ? `${effectiveBudget} tokens applied (capped from ${tokenBudget} by available context)`
-                  : `${draftBudget} tokens applied to each context arm`
-              }
-            >
-              {draftBudget} tokens
-              {isBudgetCapped && !hasUncommittedBudget && (
-                <span className="ml-1 text-amber-300">→ {effectiveBudget}</span>
-              )}
+            <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-md bg-indigo-900 text-white shadow-2xs">
+              {tokenBudget} tokens
             </span>
           </div>
 
-          <input
-            id="token-budget-range"
-            type="range"
-            min={250}
-            max={2000}
-            step={250}
-            value={draftBudget}
-            disabled={isRunning}
-            onChange={(event) => setDraftBudget(Number(event.target.value))}
-            // Commit on release (mouse/touch) and on keyboard blur, so the
-            // expensive prompt rebuild runs once per settled value.
-            onPointerUp={commitBudget}
-            onKeyUp={commitBudget}
-            onBlur={commitBudget}
-            aria-describedby="token-budget-help"
-            className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600 disabled:opacity-50"
-          />
+          <div className="flex items-center space-x-3">
+            <input
+              id="token-budget-range"
+              type="range"
+              min={250}
+              max={2000}
+              step={250}
+              value={tokenBudget}
+              disabled={isRunning}
+              onChange={(e) => onBudgetChange(Number(e.target.value))}
+              className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600 disabled:opacity-50"
+            />
+          </div>
 
-          <div className="flex flex-wrap items-center gap-1.5">
+          {/* Quick preset chips */}
+          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
             <span className="text-[11px] text-slate-400 font-semibold mr-1">Presets:</span>
-            {BUDGET_PRESETS.map((preset) => (
+            {budgetOptions.map((b) => (
               <button
-                key={preset}
-                type="button"
-                id={`preset-budget-${preset}`}
+                key={b}
+                id={`preset-budget-${b}`}
                 disabled={isRunning}
-                onClick={() => {
-                  setDraftBudget(preset);
-                  onBudgetChange(preset);
-                }}
-                aria-pressed={tokenBudget === preset}
-                className={`px-2.5 py-0.5 rounded text-[11px] font-mono font-semibold transition-all cursor-pointer focus:outline-hidden focus-visible:ring-2 focus-visible:ring-indigo-600 ${
-                  tokenBudget === preset
-                    ? 'bg-indigo-900 text-white'
+                onClick={() => onBudgetChange(b)}
+                className={`px-2.5 py-0.5 rounded text-[11px] font-mono font-semibold transition-all ${
+                  tokenBudget === b
+                    ? 'bg-indigo-900 text-white shadow-2xs'
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                } disabled:opacity-50`}
               >
-                {preset}
+                {b}
               </button>
             ))}
           </div>
-
-          <p id="token-budget-help" className="text-[11px] text-slate-500">
-            {hasUncommittedBudget ? (
-              <span className="text-indigo-700 font-semibold">
-                Release to apply {draftBudget} tokens.
-              </span>
-            ) : (
-              <>Applied identically to all three context arms — this is the length control.</>
-            )}
-          </p>
-
-          {/*
-            When the cap bites, say so plainly. The alternative — displaying the
-            requested budget as though it had been met — is what previously let
-            the control arm carry twice the tokens of the treatment arms while
-            the UI claimed the budgets were identical.
-          */}
-          {isBudgetCapped && !hasUncommittedBudget && (
-            <p className="flex items-start gap-1.5 rounded-lg border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-950">
-              <Info className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-px" aria-hidden="true" />
-              <span>
-                <strong className="font-bold">
-                  Effective budget: {effectiveBudget} of {tokenBudget} requested.
-                </strong>{' '}
-                This target&apos;s{' '}
-                {budgetLimitedBy === 'call_graph' ? 'call-graph' : 'commit-history'} context
-                cannot fill {tokenBudget} tokens, so all three arms are capped to{' '}
-                {effectiveBudget} to keep them length-matched. Raising the budget further will
-                not change this run.
-              </span>
-            </p>
-          )}
         </div>
 
-        {/* Trials */}
-        <fieldset className="space-y-1.5 min-w-0">
-          <legend className="flex items-center gap-1.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-            <Repeat className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-            Paired trials
-          </legend>
-
-          <div className="flex items-center gap-1.5" role="group" aria-label="Number of trials">
-            {TRIAL_OPTIONS.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                disabled={isRunning}
-                onClick={() => onNumTrialsChange(option.value)}
-                aria-pressed={numTrials === option.value}
-                title={option.hint}
-                className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer focus:outline-hidden focus-visible:ring-2 focus-visible:ring-indigo-600 ${
-                  numTrials === option.value
-                    ? 'bg-indigo-900 text-white'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                } disabled:opacity-50 disabled:cursor-not-allowed`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-
-          <p
-            className={`text-[11px] max-w-[15rem] ${
-              belowInferenceThreshold ? 'text-amber-700 font-semibold' : 'text-slate-500'
-            }`}
-          >
-            {selectedTrialOption.hint}
-          </p>
-        </fieldset>
-
-        {/* Models and temperature */}
-        <div className="flex flex-wrap items-start gap-3">
+        {/* Middle: Secondary Configs & Estimated Token Cost Display */}
+        <div className="flex flex-wrap items-center gap-3">
           <div>
-            <label
-              htmlFor="select-temperature"
-              className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1"
-            >
+            <label htmlFor="select-temperature" className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
               Temperature
             </label>
             <select
               id="select-temperature"
               value={temperature}
               disabled={isRunning}
-              onChange={(event) => onTemperatureChange(Number(event.target.value))}
-              className="text-xs font-mono px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white focus:ring-1 focus:ring-indigo-600 focus:outline-hidden disabled:opacity-50"
+              onChange={(e) => onTemperatureChange(Number(e.target.value))}
+              className="text-xs font-mono px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white focus:ring-1 focus:ring-indigo-600 focus:outline-hidden disabled:opacity-50 shadow-2xs"
             >
-              {TEMPERATURE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
+              <option value={0.0}>0.0 (Deterministic)</option>
+              <option value={0.2}>0.2 (Recommended)</option>
+              <option value={0.5}>0.5 (Balanced)</option>
+              <option value={0.7}>0.7 (Exploratory)</option>
             </select>
           </div>
 
           <div>
-            <label
-              htmlFor="select-model-name"
-              className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1"
-            >
-              Generator model
+            <label htmlFor="select-model-name" className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+              Benchmark Model
             </label>
             <select
               id="select-model-name"
               value={model}
               disabled={isRunning}
-              onChange={(event) => onModelChange(event.target.value)}
-              className="text-xs font-mono px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white focus:ring-1 focus:ring-indigo-600 focus:outline-hidden disabled:opacity-50"
+              onChange={(e) => onModelChange(e.target.value)}
+              className="text-xs font-mono px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white focus:ring-1 focus:ring-indigo-600 focus:outline-hidden disabled:opacity-50 shadow-2xs"
             >
-              {GEMINI_MODELS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.id} ({option.tier})
-                </option>
-              ))}
+              <option value="gemini-3.7-flash">gemini-3.7-flash (Default)</option>
+              <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Fast)</option>
             </select>
           </div>
 
-          <div>
-            <label
-              htmlFor="select-judge-model"
-              className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1"
-            >
-              Judge model
-            </label>
-            <select
-              id="select-judge-model"
-              value={judgeModel}
-              disabled={isRunning}
-              onChange={(event) => onJudgeModelChange(event.target.value)}
-              aria-describedby="judge-model-help"
-              className="text-xs font-mono px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white focus:ring-1 focus:ring-indigo-600 focus:outline-hidden disabled:opacity-50"
-            >
-              {GEMINI_MODELS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.id}
-                </option>
-              ))}
-            </select>
-            <p id="judge-model-help" className="sr-only">
-              Using a different model to judge than to generate reduces self-preference bias.
-            </p>
+          {/* Dedicated Estimated Token Cost Display */}
+          <div
+            id="estimated-token-cost-display"
+            className="p-2.5 rounded-lg border border-slate-200 bg-slate-50/90 flex items-center space-x-3 shadow-2xs"
+            title={`${pricing.displayName}: ₹${(pricing.inputPerMillionUSD * USD_TO_INR).toFixed(2)}/1M input, ₹${(pricing.outputPerMillionUSD * USD_TO_INR).toFixed(2)}/1M output. Single benchmark cost: ~₹${singleRunCostINR.toFixed(4)}`}
+          >
+            <div className="w-8 h-8 rounded-lg bg-emerald-100/90 border border-emerald-200 flex items-center justify-center text-emerald-700 shrink-0">
+              <Coins className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center space-x-1.5">
+                <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                  Estimated Token Cost
+                </span>
+                <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  4 Concurrent Arms
+                </span>
+              </div>
+              <div className="flex items-baseline space-x-1.5 font-mono">
+                <span className="text-sm font-extrabold text-slate-900">
+                  ~₹{singleRunCostINR < 0.01 ? singleRunCostINR.toFixed(4) : singleRunCostINR.toFixed(3)}
+                </span>
+                <span className="text-[10px] text-slate-500 font-sans">
+                  ({totalCombinedTokens.toLocaleString()} tok)
+                </span>
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Run */}
-        <div className="shrink-0">
+        {/* Right: Primary Run Button */}
+        <div className="shrink-0 flex items-center">
           <button
             id="run-benchmark-btn"
-            type="button"
             disabled={isRunning}
             onClick={onRunBenchmark}
-            aria-busy={isRunning}
-            className={`w-full lg:w-auto inline-flex items-center justify-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs transition-all shadow-md ${
+            className={`w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs transition-all shadow-md ${
               isRunning
                 ? 'bg-slate-800 text-slate-300 cursor-wait'
                 : 'bg-indigo-600 hover:bg-indigo-700 text-white active:scale-98 shadow-indigo-200 cursor-pointer'
-            } focus:outline-hidden focus-visible:ring-2 focus-visible:ring-indigo-700 focus-visible:ring-offset-2`}
+            }`}
           >
             {isRunning ? (
               <>
-                <span
-                  className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"
-                  aria-hidden="true"
-                />
-                <span className="truncate max-w-[12rem]">
-                  {progressMessage ?? 'Running…'}
+                <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <span>
+                  {currentStep === 'generating'
+                    ? 'Generating 4 Arms...'
+                    : 'Evaluating Candidates...'}
                 </span>
               </>
             ) : (
               <>
-                <Play className="w-3.5 h-3.5 fill-current" aria-hidden="true" />
-                <span>
-                  Run {numTrials} {numTrials === 1 ? 'trial' : 'trials'}
-                </span>
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>Run Benchmark</span>
               </>
             )}
           </button>
         </div>
       </div>
 
-      {/* Cost and allocation */}
+      {/* Token Budget Balance Inspector & Cost Breakdown Ribbon */}
       <div className="pt-3 border-t border-slate-100 space-y-2">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1.5">
-            <Layers className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-            Prompt allocation &amp; projected session cost
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center space-x-1.5">
+            <Layers className="w-3.5 h-3.5 text-slate-400" />
+            <span>Prompt Token Allocation & Cost Breakdown (4 Concurrent Arms):</span>
           </span>
 
-          <div className="flex items-center gap-3 text-[11px]">
-            <span
-              id="estimated-token-cost-display"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50/80 px-2.5 py-1 font-mono"
-              title={`${costEstimate.totalCalls} API calls across ${numTrials} trial(s). Approximate: derived from the local token heuristic at ₹${(USD_TO_INR).toFixed(2)}/USD.`}
-            >
-              <Coins className="w-3.5 h-3.5 text-emerald-700" aria-hidden="true" />
-              <span className="font-extrabold text-slate-900">
-                ~{formatINR(costEstimate.totalINR)}
-              </span>
-              <span className="text-slate-500">
-                / {costEstimate.totalCalls} calls
-              </span>
+          <div className="flex items-center space-x-3 text-[11px]">
+            <span className="font-mono text-slate-500 hidden sm:inline">
+              Rate: <span className="font-semibold text-slate-700">₹{(pricing.inputPerMillionUSD * USD_TO_INR).toFixed(2)}/M prompt</span>
             </span>
-
             <button
               type="button"
               id="toggle-cost-details-btn"
-              onClick={() => setShowCostBreakdown((open) => !open)}
-              aria-expanded={showCostBreakdown}
-              aria-controls="cost-breakdown-panel"
-              className="text-indigo-600 hover:text-indigo-800 font-semibold cursor-pointer focus:outline-hidden focus-visible:ring-2 focus-visible:ring-indigo-600 rounded px-1"
+              onClick={() => setShowCostBreakdownModal(!showCostBreakdownModal)}
+              className="text-indigo-600 hover:text-indigo-800 font-semibold flex items-center space-x-1 cursor-pointer"
             >
-              {showCostBreakdown ? 'Hide cost detail' : 'Cost detail'}
+              <Coins className="w-3 h-3 text-indigo-600" />
+              <span>{showCostBreakdownModal ? 'Hide Cost Math' : 'Cost Breakdown Details'}</span>
             </button>
           </div>
         </div>
 
-        {showCostBreakdown && (
-          <div
-            id="cost-breakdown-panel"
-            className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs space-y-2"
-          >
-            <p className="flex items-start gap-1.5 text-[11px] text-slate-600">
-              <Info className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-px" aria-hidden="true" />
-              <span>
-                Estimated from the local token heuristic, not measured — actual billing will
-                differ. Converted at an approximate ₹{USD_TO_INR.toFixed(2)}/USD.
+        {/* Expandable Cost Math Details */}
+        {showCostBreakdownModal && (
+          <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs space-y-2 font-mono">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200/80 pb-2 text-[11px]">
+              <div>
+                <span className="font-bold text-slate-800">{pricing.displayName} Pricing Formula</span>
+                <span className="text-slate-500 ml-2">
+                  (Input: ₹{(pricing.inputPerMillionUSD * USD_TO_INR).toFixed(2)}/M tokens | Output: ₹{(pricing.outputPerMillionUSD * USD_TO_INR).toFixed(2)}/M tokens)
+                </span>
+              </div>
+              <span className="text-emerald-700 font-bold">
+                Single Benchmark Run Cost: ~₹{singleRunCostINR.toFixed(4)}
               </span>
-            </p>
+            </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-[11px] font-mono min-w-[30rem]">
-                <caption className="sr-only">
-                  Projected cost by API call type for {numTrials} trials
-                </caption>
-                <thead>
-                  <tr className="text-left text-slate-500">
-                    <th scope="col" className="py-1 pr-2 font-semibold">Call type</th>
-                    <th scope="col" className="py-1 px-2 font-semibold text-right">Calls</th>
-                    <th scope="col" className="py-1 px-2 font-semibold text-right">In</th>
-                    <th scope="col" className="py-1 px-2 font-semibold text-right">Out</th>
-                    <th scope="col" className="py-1 pl-2 font-semibold text-right">Cost</th>
-                  </tr>
-                </thead>
-                <tbody className="text-slate-800">
-                  {costEstimate.lines.map((line) => (
-                    <tr key={line.label} className="border-t border-slate-200">
-                      <td className="py-1 pr-2 font-sans">{line.label}</td>
-                      <td className="py-1 px-2 text-right">{line.calls}</td>
-                      <td className="py-1 px-2 text-right">
-                        {line.inputTokens.toLocaleString()}
-                      </td>
-                      <td className="py-1 px-2 text-right">
-                        {line.outputTokens.toLocaleString()}
-                      </td>
-                      <td className="py-1 pl-2 text-right">
-                        {line.unpriced ? (
-                          <span className="text-slate-400" title="Embeddings are not billed from the generation price table">
-                            not priced
-                          </span>
-                        ) : (
-                          formatINR(line.costINR)
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                  <tr className="border-t-2 border-slate-300 font-bold">
-                    <td className="py-1 pr-2 font-sans">
-                      Total ({numTrials} {numTrials === 1 ? 'trial' : 'trials'})
-                    </td>
-                    <td className="py-1 px-2 text-right">{costEstimate.totalCalls}</td>
-                    <td className="py-1 px-2 text-right">
-                      {costEstimate.totalInputTokens.toLocaleString()}
-                    </td>
-                    <td className="py-1 px-2 text-right">
-                      {costEstimate.totalOutputTokens.toLocaleString()}
-                    </td>
-                    <td className="py-1 pl-2 text-right text-emerald-800">
-                      {formatINR(costEstimate.totalINR)}
-                    </td>
-                  </tr>
-                  <tr className="text-slate-500">
-                    <td className="py-1 pr-2 font-sans" colSpan={4}>
-                      Per trial
-                    </td>
-                    <td className="py-1 pl-2 text-right">
-                      {formatINR(costEstimate.perTrialINR)}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+              <div className="bg-white p-2 rounded border border-slate-200">
+                <span className="text-slate-500 block text-[10px]">Prompt Tokens (4 Requests)</span>
+                <span className="font-bold text-slate-800">{totalPromptTokens.toLocaleString()} tok</span>
+                <span className="text-slate-500 block text-[10px] mt-0.5">
+                  Cost: ~₹{totalPromptCostINR.toFixed(4)}
+                </span>
+              </div>
+              <div className="bg-white p-2 rounded border border-slate-200">
+                <span className="text-slate-500 block text-[10px]">Est. Output Docstrings (4)</span>
+                <span className="font-bold text-slate-800">~{totalOutputTokens.toLocaleString()} tok</span>
+                <span className="text-slate-500 block text-[10px] mt-0.5">
+                  Cost: ~₹{totalOutputCostINR.toFixed(4)}
+                </span>
+              </div>
+              <div className="bg-white p-2 rounded border border-emerald-200 bg-emerald-50/30">
+                <span className="text-emerald-800 block text-[10px] font-bold">Execution Efficiency</span>
+                <span className="font-bold text-emerald-950">~{runsPerRupee.toLocaleString()} runs</span>
+                <span className="text-emerald-700 block text-[10px] mt-0.5">per ₹1.00 spent</span>
+              </div>
             </div>
           </div>
         )}
 
+        {/* 4-Arm Allocation Cards with per-arm cost tag */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {armMetrics.map((arm) => {
-            const styles = ARM_STYLES[arm.condition];
-            const promptTokens = arm.promptTokens || 1;
+            const isControlOrTreatment = arm.condition !== 'code_only';
 
             return (
               <div
                 key={arm.condition}
-                className={`p-3 rounded-lg border text-xs space-y-1.5 ${styles.card}`}
+                className={`p-3 rounded-lg border text-xs space-y-1.5 ${
+                  arm.condition === 'code_only'
+                    ? 'bg-slate-50 border-slate-200'
+                    : arm.condition === 'few_shot_control'
+                    ? 'bg-indigo-50/50 border-indigo-200'
+                    : arm.condition === 'call_graph'
+                    ? 'bg-emerald-50/50 border-emerald-200'
+                    : 'bg-amber-50/50 border-amber-200'
+                }`}
               >
-                <div className="flex items-center justify-between font-bold gap-2">
+                <div className="flex items-center justify-between font-bold">
                   <span className="truncate text-slate-800">{arm.title}</span>
-                  <span className="font-mono text-slate-900 shrink-0">
-                    {arm.promptTokens} tok
-                  </span>
+                  <div className="flex items-center space-x-1.5 font-mono">
+                    <span className="text-slate-900">{arm.promptTok} tok</span>
+                    <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200">
+                      ~₹{arm.armCostINR < 0.01 ? arm.armCostINR.toFixed(4) : arm.armCostINR.toFixed(3)}
+                    </span>
+                  </div>
                 </div>
 
-                {/* Stacked bar: target code versus injected context. */}
-                <div
-                  className="w-full h-2 bg-slate-200 rounded-full overflow-hidden flex"
-                  role="img"
-                  aria-label={`${arm.title}: ${arm.targetTokens} target code tokens, ${arm.contextTokens} context tokens`}
-                >
+                {/* Progress bar breakdown */}
+                <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden flex">
                   <div
-                    style={{
-                      width: `${Math.min(100, (arm.targetTokens / promptTokens) * 100)}%`,
-                    }}
+                    style={{ width: `${Math.min(100, (arm.targetTok / (arm.promptTok || 1)) * 100)}%` }}
                     className="bg-slate-600 h-full"
+                    title={`Target code: ~${arm.targetTok} tokens`}
                   />
-                  {arm.contextTokens > 0 && (
+                  {arm.ctxTok > 0 && (
                     <div
-                      style={{
-                        width: `${Math.min(100, (arm.contextTokens / promptTokens) * 100)}%`,
-                      }}
-                      className={`${styles.bar} h-full`}
+                      style={{ width: `${Math.min(100, (arm.ctxTok / (arm.promptTok || 1)) * 100)}%` }}
+                      className={
+                        arm.condition === 'few_shot_control'
+                          ? 'bg-indigo-600 h-full'
+                          : arm.condition === 'call_graph'
+                          ? 'bg-emerald-600 h-full'
+                          : 'bg-amber-500 h-full'
+                      }
+                      title={`Context allocation: ~${arm.ctxTok} tokens`}
                     />
                   )}
                 </div>
 
                 <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono">
-                  <span>Code: {arm.targetTokens}t</span>
+                  <span>Code: {arm.targetTok}t</span>
                   <span className="font-semibold text-slate-700">
-                    Ctx: {arm.contextTokens}t
-                    {arm.condition === 'code_only' ? ' (floor)' : ` / ${effectiveBudget}`}
+                    Ctx: {arm.ctxTok}t {isControlOrTreatment ? `(= ${tokenBudget})` : '(0)'}
                   </span>
                 </div>
               </div>
@@ -618,12 +398,7 @@ const TokenBudgetControllerComponent: React.FC<TokenBudgetControllerProps> = ({
           })}
         </div>
       </div>
-    </section>
+    </div>
   );
 };
 
-/**
- * Memoized so that unrelated parent state (toasts, modal open/close, progress
- * ticks) does not re-render the controller and its cost table.
- */
-export const TokenBudgetController = memo(TokenBudgetControllerComponent);

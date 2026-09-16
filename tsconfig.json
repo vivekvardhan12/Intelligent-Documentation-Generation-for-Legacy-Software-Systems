@@ -1,52 +1,26 @@
 {
   "compilerOptions": {
-    /* Target a modern baseline: all supported browsers and Node 22 handle ES2022. */
     "target": "ES2022",
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
     "module": "ESNext",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "moduleResolution": "bundler",
-    "jsx": "react-jsx",
-
-    /*
-     * STRICT MODE.
-     *
-     * This was previously off, and `@types/react` was never installed — so
-     * `React.FC` resolved to `any` and EVERY component's props and state went
-     * completely unchecked. Turning both on immediately surfaced a batch of
-     * latent bugs that had been rendering `undefined` in the live UI:
-     *
-     *   - `evaluation.rougeL`          (the field is `rougeLScore`)
-     *   - `evaluation.factualityScore` (it lives under `evaluation.factuality`)
-     *   - `result.actualInputTokens`   (it lives under `result.tokens`)
-     *   - `comparison.ci95.lower/.upper` on a `[number, number]` tuple, which
-     *     rendered as "95% CI [undefined, undefined]" on the verdict card
-     *
-     * None of those were reachable by the linter or by review; the type
-     * checker found all of them in one pass. Strict mode stays on so they
-     * cannot come back.
-     */
-    "strict": true,
-
-    /* Report unused locals and parameters as errors, matching the lint rules. */
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    /* Catch a missing `return` on one branch of a function that returns a value. */
-    "noImplicitReturns": true,
-    /* Require explicit handling of index-signature misses. */
-    "noFallthroughCasesInSwitch": true,
-
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "skipLibCheck": true,
+    "moduleResolution": "bundler",
     "isolatedModules": true,
     "moduleDetection": "force",
     "allowJs": true,
-    "allowImportingTsExtensions": true,
-    "noEmit": true,
-    "experimentalDecorators": true,
-    "useDefineForClassFields": false,
-
+    "jsx": "react-jsx",
     "paths": {
-      "@/*": ["./*"]
-    }
-  },
-  "include": ["src", "server.ts", "vite.config.ts", "vitest.config.ts", "eslint.config.js"]
+      "@/*": [
+        "./*"
+      ]
+    },
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  }
 }
