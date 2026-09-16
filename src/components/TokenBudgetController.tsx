@@ -9,8 +9,6 @@ interface TokenBudgetControllerProps {
   onTemperatureChange: (temp: number) => void;
   model: string;
   onModelChange: (model: string) => void;
-  judgeModel?: string;
-  onJudgeModelChange?: (judgeModel: string) => void;
   promptPayloads: Record<ContextCondition, ConditionPromptPayload>;
   isRunning: boolean;
   onRunBenchmark: () => void;
@@ -23,18 +21,15 @@ interface ModelPricingConfig {
   displayName: string;
 }
 
-// 1 USD ≈ 87.0 INR (standard exchange rate)
-const USD_TO_INR = 87.0;
-
 const MODEL_PRICING: Record<string, ModelPricingConfig> = {
   'gemini-3.7-flash': {
-    inputPerMillionUSD: 0.10, // $0.10 per 1M prompt tokens (~₹8.70/M)
-    outputPerMillionUSD: 0.40, // $0.40 per 1M output tokens (~₹34.80/M)
+    inputPerMillionUSD: 0.10, // $0.10 per 1M prompt tokens
+    outputPerMillionUSD: 0.40, // $0.40 per 1M output tokens
     displayName: 'Gemini 3.7 Flash',
   },
   'gemini-3.1-flash-lite': {
-    inputPerMillionUSD: 0.075, // $0.075 per 1M prompt tokens (~₹6.53/M)
-    outputPerMillionUSD: 0.30, // $0.30 per 1M output tokens (~₹26.10/M)
+    inputPerMillionUSD: 0.075, // $0.075 per 1M prompt tokens
+    outputPerMillionUSD: 0.30, // $0.30 per 1M output tokens
     displayName: 'Gemini 3.1 Flash-Lite',
   },
 };
@@ -52,8 +47,6 @@ export const TokenBudgetController: React.FC<TokenBudgetControllerProps> = ({
   onTemperatureChange,
   model,
   onModelChange,
-  judgeModel = 'gemini-3.7-flash',
-  onJudgeModelChange,
   promptPayloads,
   isRunning,
   onRunBenchmark,
@@ -80,11 +73,11 @@ export const TokenBudgetController: React.FC<TokenBudgetControllerProps> = ({
       const estOutputTok = 75;
       const totalArmTok = promptTok + estOutputTok;
 
-      // Cost calculation in USD and INR (Rupees)
+      // Cost calculation in USD and cents
       const armInputCostUSD = (promptTok * pricing.inputPerMillionUSD) / 1_000_000;
       const armOutputCostUSD = (estOutputTok * pricing.outputPerMillionUSD) / 1_000_000;
       const armTotalCostUSD = armInputCostUSD + armOutputCostUSD;
-      const armCostINR = armTotalCostUSD * USD_TO_INR;
+      const armCostCents = armTotalCostUSD * 100;
 
       return {
         condition: cond,
@@ -94,13 +87,13 @@ export const TokenBudgetController: React.FC<TokenBudgetControllerProps> = ({
         ctxTok,
         estOutputTok,
         totalArmTok,
-        armCostINR,
+        armCostCents,
         armTotalCostUSD,
       };
     });
   }, [promptPayloads, pricing]);
 
-  // Aggregate consumption across the four concurrent prompt requests (single run)
+  // Aggregate consumption across the four concurrent prompt requests
   const totalPromptTokens = useMemo(() => {
     return armMetrics.reduce((sum, arm) => sum + arm.promptTok, 0);
   }, [armMetrics]);
@@ -111,18 +104,18 @@ export const TokenBudgetController: React.FC<TokenBudgetControllerProps> = ({
 
   const totalCombinedTokens = totalPromptTokens + totalOutputTokens;
 
-  // Aggregate cost calculations in USD and Rupees (₹) for a single benchmark run
+  // Aggregate cost calculations
   const totalPromptCostUSD = (totalPromptTokens * pricing.inputPerMillionUSD) / 1_000_000;
   const totalOutputCostUSD = (totalOutputTokens * pricing.outputPerMillionUSD) / 1_000_000;
-  const singleRunCostUSD = totalPromptCostUSD + totalOutputCostUSD;
+  const totalCostUSD = totalPromptCostUSD + totalOutputCostUSD;
 
-  // Cost in Indian Rupees (₹)
-  const singleRunCostINR = singleRunCostUSD * USD_TO_INR;
-  const totalPromptCostINR = totalPromptCostUSD * USD_TO_INR;
-  const totalOutputCostINR = totalOutputCostUSD * USD_TO_INR;
+  // Cost in cents (¢): 1 USD = 100 cents
+  const totalCostCents = totalCostUSD * 100;
+  const promptCostCents = totalPromptCostUSD * 100;
+  const outputCostCents = totalOutputCostUSD * 100;
 
-  // Approximate runs achievable per ₹1.00 spent
-  const runsPerRupee = singleRunCostINR > 0 ? Math.floor(1 / singleRunCostINR) : 0;
+  // Approximate runs achievable per $1.00 USD
+  const runsPerDollar = totalCostUSD > 0 ? Math.floor(1 / totalCostUSD) : 0;
 
   return (
     <div id="token-budget-controller" className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 sm:p-5 space-y-4">
@@ -217,7 +210,7 @@ export const TokenBudgetController: React.FC<TokenBudgetControllerProps> = ({
           <div
             id="estimated-token-cost-display"
             className="p-2.5 rounded-lg border border-slate-200 bg-slate-50/90 flex items-center space-x-3 shadow-2xs"
-            title={`${pricing.displayName}: ₹${(pricing.inputPerMillionUSD * USD_TO_INR).toFixed(2)}/1M input, ₹${(pricing.outputPerMillionUSD * USD_TO_INR).toFixed(2)}/1M output. Single benchmark cost: ~₹${singleRunCostINR.toFixed(4)}`}
+            title={`${pricing.displayName}: $${pricing.inputPerMillionUSD}/1M input, $${pricing.outputPerMillionUSD}/1M output. Total 4-arm cost: ~${totalCostCents.toFixed(4)}¢`}
           >
             <div className="w-8 h-8 rounded-lg bg-emerald-100/90 border border-emerald-200 flex items-center justify-center text-emerald-700 shrink-0">
               <Coins className="w-4 h-4" />
@@ -228,12 +221,12 @@ export const TokenBudgetController: React.FC<TokenBudgetControllerProps> = ({
                   Estimated Token Cost
                 </span>
                 <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 border border-emerald-200">
-                  4 Concurrent Arms
+                  4 Requests
                 </span>
               </div>
               <div className="flex items-baseline space-x-1.5 font-mono">
                 <span className="text-sm font-extrabold text-slate-900">
-                  ~₹{singleRunCostINR < 0.01 ? singleRunCostINR.toFixed(4) : singleRunCostINR.toFixed(3)}
+                  ~{totalCostCents < 0.01 ? totalCostCents.toFixed(4) : totalCostCents.toFixed(3)}¢
                 </span>
                 <span className="text-[10px] text-slate-500 font-sans">
                   ({totalCombinedTokens.toLocaleString()} tok)
@@ -260,14 +253,14 @@ export const TokenBudgetController: React.FC<TokenBudgetControllerProps> = ({
                 <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                 <span>
                   {currentStep === 'generating'
-                    ? 'Generating 4 Arms...'
-                    : 'Evaluating Candidates...'}
+                    ? '1/2 Generating 4 Arms in Parallel...'
+                    : '2/2 LLM Judge Evaluating Rubric...'}
                 </span>
               </>
             ) : (
               <>
                 <Play className="w-3.5 h-3.5 fill-current" />
-                <span>Run Benchmark</span>
+                <span>Run 4-Arm Isolation Benchmark</span>
               </>
             )}
           </button>
@@ -284,7 +277,7 @@ export const TokenBudgetController: React.FC<TokenBudgetControllerProps> = ({
 
           <div className="flex items-center space-x-3 text-[11px]">
             <span className="font-mono text-slate-500 hidden sm:inline">
-              Rate: <span className="font-semibold text-slate-700">₹{(pricing.inputPerMillionUSD * USD_TO_INR).toFixed(2)}/M prompt</span>
+              Rate: <span className="font-semibold text-slate-700">${pricing.inputPerMillionUSD}/M prompt</span>
             </span>
             <button
               type="button"
@@ -305,11 +298,11 @@ export const TokenBudgetController: React.FC<TokenBudgetControllerProps> = ({
               <div>
                 <span className="font-bold text-slate-800">{pricing.displayName} Pricing Formula</span>
                 <span className="text-slate-500 ml-2">
-                  (Input: ₹{(pricing.inputPerMillionUSD * USD_TO_INR).toFixed(2)}/M tokens | Output: ₹{(pricing.outputPerMillionUSD * USD_TO_INR).toFixed(2)}/M tokens)
+                  (Input: ${pricing.inputPerMillionUSD}/M tokens | Output: ${pricing.outputPerMillionUSD}/M tokens)
                 </span>
               </div>
               <span className="text-emerald-700 font-bold">
-                Single Benchmark Run Cost: ~₹{singleRunCostINR.toFixed(4)}
+                Total Benchmark Cost: ~{totalCostCents.toFixed(4)}¢ (${totalCostUSD.toFixed(6)})
               </span>
             </div>
 
@@ -318,20 +311,20 @@ export const TokenBudgetController: React.FC<TokenBudgetControllerProps> = ({
                 <span className="text-slate-500 block text-[10px]">Prompt Tokens (4 Requests)</span>
                 <span className="font-bold text-slate-800">{totalPromptTokens.toLocaleString()} tok</span>
                 <span className="text-slate-500 block text-[10px] mt-0.5">
-                  Cost: ~₹{totalPromptCostINR.toFixed(4)}
+                  Cost: ~{promptCostCents.toFixed(4)}¢
                 </span>
               </div>
               <div className="bg-white p-2 rounded border border-slate-200">
                 <span className="text-slate-500 block text-[10px]">Est. Output Docstrings (4)</span>
                 <span className="font-bold text-slate-800">~{totalOutputTokens.toLocaleString()} tok</span>
                 <span className="text-slate-500 block text-[10px] mt-0.5">
-                  Cost: ~₹{totalOutputCostINR.toFixed(4)}
+                  Cost: ~{outputCostCents.toFixed(4)}¢
                 </span>
               </div>
               <div className="bg-white p-2 rounded border border-emerald-200 bg-emerald-50/30">
                 <span className="text-emerald-800 block text-[10px] font-bold">Execution Efficiency</span>
-                <span className="font-bold text-emerald-950">~{runsPerRupee.toLocaleString()} runs</span>
-                <span className="text-emerald-700 block text-[10px] mt-0.5">per ₹1.00 spent</span>
+                <span className="font-bold text-emerald-950">~{runsPerDollar.toLocaleString()} runs</span>
+                <span className="text-emerald-700 block text-[10px] mt-0.5">per $1.00 USD spent</span>
               </div>
             </div>
           </div>
@@ -360,7 +353,7 @@ export const TokenBudgetController: React.FC<TokenBudgetControllerProps> = ({
                   <div className="flex items-center space-x-1.5 font-mono">
                     <span className="text-slate-900">{arm.promptTok} tok</span>
                     <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-200">
-                      ~₹{arm.armCostINR < 0.01 ? arm.armCostINR.toFixed(4) : arm.armCostINR.toFixed(3)}
+                      ~{arm.armCostCents.toFixed(4)}¢
                     </span>
                   </div>
                 </div>

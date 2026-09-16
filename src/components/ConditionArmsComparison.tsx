@@ -181,39 +181,10 @@ export const ConditionArmsComparison: React.FC<ConditionArmsComparisonProps> = (
                       </div>
                     </div>
 
-                    {/* Lexical & Semantic Overlaps */}
-                    <div className="grid grid-cols-3 gap-1 text-[10px] text-slate-600 font-mono px-1 py-1 bg-slate-50 rounded border border-slate-200">
-                      <div>BLEU: <span className="font-bold text-slate-800">{(evalData.bleuScore || 0).toFixed(3)}</span></div>
-                      <div>ROUGE-L: <span className="font-bold text-slate-800">{(evalData.rougeLScore || 0).toFixed(3)}</span></div>
-                      <div>Semantic: <span className="font-bold text-indigo-700">{(evalData.semanticSimilarity || 0).toFixed(3)}</span></div>
-                    </div>
-
-                    {/* Factuality & Blind Badge */}
-                    <div className="flex items-center justify-between text-[11px] px-1">
-                      {evalData.factuality ? (
-                        <div className="flex items-center space-x-1.5">
-                          <span className="font-bold text-slate-700">Factuality:</span>
-                          <span
-                            className={`px-1.5 py-0.2 rounded font-mono font-bold text-[10px] border ${
-                              evalData.factuality.factualityScore >= 90
-                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                                : evalData.factuality.factualityScore >= 75
-                                ? 'bg-amber-50 text-amber-800 border-amber-200'
-                                : 'bg-rose-50 text-rose-800 border-rose-200'
-                            }`}
-                          >
-                            {evalData.factuality.factualityScore}% ({evalData.factuality.supportedClaims}/{evalData.factuality.totalClaims} verified)
-                          </span>
-                        </div>
-                      ) : (
-                        <span />
-                      )}
-
-                      {evalData.anonymizedCandidateId && (
-                        <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.2 rounded">
-                          Blind: {evalData.anonymizedCandidateId}
-                        </span>
-                      )}
+                    {/* Lexical Overlaps */}
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono px-1">
+                      <span>BLEU: {(evalData.bleuScore || 0).toFixed(3)}</span>
+                      <span>ROUGE-L: {(evalData.rougeLScore || 0).toFixed(3)}</span>
                     </div>
 
                     {/* Judge Critique */}

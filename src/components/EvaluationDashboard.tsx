@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { ContextCondition, ExperimentRun } from '../types';
+import { ExperimentRun } from '../types';
 import {
   ResponsiveContainer,
   RadarChart,
@@ -16,18 +16,7 @@ import {
   CartesianGrid,
   Cell,
 } from 'recharts';
-import {
-  BarChart3,
-  PieChart,
-  Activity,
-  Layers,
-  Columns2,
-  ArrowLeftRight,
-  Sliders,
-  Check,
-  Scale,
-  Coins,
-} from 'lucide-react';
+import { BarChart3, PieChart, Activity, Zap, Layers, Columns2, ArrowLeftRight, Sliders, Check } from 'lucide-react';
 import { RunComparisonView } from './RunComparisonView';
 
 interface EvaluationDashboardProps {
@@ -44,7 +33,6 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
   const [viewMode, setViewMode] = useState<'visualizer' | 'comparison'>('visualizer');
   const [selectedComparisonRunId, setSelectedComparisonRunId] = useState<string | undefined>();
   const [copiedRunId, setCopiedRunId] = useState<string | null>(null);
-  const [activeChartTab, setActiveChartTab] = useState<'radar' | 'bar_ci' | 'token_compliance'>('radar');
 
   // Consolidate all unique runs including active run and historical trials
   const allRuns = useMemo(() => {
@@ -109,51 +97,33 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
     },
   ];
 
-  const session = experimentRun.multiTrialSession;
-
   // Bar Chart comparison of Overall Quality
   const barData = [
     {
-      name: 'Code Only',
-      score: results.code_only?.evaluation?.overallQuality ?? 0,
-      color: '#64748b',
+      name: 'Code Only (Floor)',
+      score: results.code_only?.evaluation?.overallQuality || 0,
+      color: '#64748b', // slate-500
       role: 'Baseline Floor',
     },
     {
       name: 'Few-Shot Control',
-      score: results.few_shot_control?.evaluation?.overallQuality ?? 0,
-      color: '#4f46e5',
+      score: results.few_shot_control?.evaluation?.overallQuality || 0,
+      color: '#4f46e5', // indigo-600
       role: 'Length Control',
     },
     {
       name: 'Call-Graph',
-      score: results.call_graph?.evaluation?.overallQuality ?? 0,
-      color: '#059669',
+      score: results.call_graph?.evaluation?.overallQuality || 0,
+      color: '#059669', // emerald-600
       role: 'Structural Context',
     },
     {
       name: 'Git-History',
-      score: results.git_history?.evaluation?.overallQuality ?? 0,
-      color: '#d97706',
+      score: results.git_history?.evaluation?.overallQuality || 0,
+      color: '#d97706', // amber-600
       role: 'Evolutionary Context',
     },
   ];
-
-  // Token budget compliance data
-  const tokenComplianceData = useMemo(() => {
-    const conditions: ContextCondition[] = ['code_only', 'few_shot_control', 'call_graph', 'git_history'];
-    return conditions.map((c) => {
-      const res = results[c];
-      const tok = res?.tokens;
-      return {
-        arm: res?.title || c,
-        requested: tok?.requestedBudget || (c === 'code_only' ? 0 : experimentRun.tokenBudget),
-        actualInput: tok?.totalInputTokens || res?.promptPayload?.exactPromptTokens || 0,
-        outputTokens: tok?.outputTokens || 75,
-        compliancePct: tok?.compliancePercentage ?? 100,
-      };
-    });
-  }, [results, experimentRun.tokenBudget]);
 
   const handleLaunchComparisonFromRow = (targetRunId: string) => {
     setSelectedComparisonRunId(targetRunId);
@@ -169,14 +139,14 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
             <Activity className="w-4 h-4 text-indigo-900" />
             <span>
               {viewMode === 'visualizer'
-                ? 'Multi-Dimensional Analysis & Benchmark Statistics'
+                ? 'Multi-Dimensional Analysis & Visual Metrics'
                 : 'Dedicated Side-by-Side Run Comparison'}
             </span>
           </h3>
           <p className="text-xs text-slate-500">
             {viewMode === 'visualizer'
-              ? 'Multi-dimensional criteria scores, experimental arm comparisons, and token budget compliance.'
-              : 'Direct side-by-side comparative analysis of metrics, dimensional profiles, and docstrings between any two experimental runs.'}
+              ? 'Radar profile and composite quality distributions highlighting qualitative trade-offs under identical token expenditure.'
+              : 'Direct side-by-side comparative analysis of metrics, dimensional profiles, and docstrings between any two experimental trials.'}
           </p>
         </div>
 
@@ -233,274 +203,84 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
         />
       ) : (
         <>
-          {/* 4-Arm Experimental Performance Breakdown Table */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
-                <Scale className="w-4 h-4 text-indigo-600" />
-                <span>4-Arm Experimental Performance Breakdown:</span>
-              </span>
-              <span className="text-[11px] font-mono text-slate-500">
-                Evaluation Criteria & Docstring Metrics
-              </span>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Chart 1: Radar Comparison */}
+            <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
+                  <PieChart className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Criterion Radar Profile (0-100)</span>
+                </span>
+              </div>
+
+              <div className="h-64 w-full text-xs">
+                <ResponsiveContainer width="100%" height="100%">
+                  <RadarChart data={radarData} outerRadius="75%">
+                    <PolarGrid stroke="#cbd5e1" />
+                    <PolarAngleAxis dataKey="metric" tick={{ fill: '#334155', fontSize: 11, fontWeight: 600 }} />
+                    <PolarRadiusAxis angle={30} domain={[0, 100]} stroke="#94a3b8" />
+                    <Radar
+                      name="Code Only (Floor)"
+                      dataKey="code_only"
+                      stroke="#64748b"
+                      fill="#64748b"
+                      fillOpacity={0.15}
+                    />
+                    <Radar
+                      name="Few-Shot Control"
+                      dataKey="few_shot_control"
+                      stroke="#4f46e5"
+                      fill="#4f46e5"
+                      fillOpacity={0.2}
+                    />
+                    <Radar
+                      name="Call-Graph"
+                      dataKey="call_graph"
+                      stroke="#059669"
+                      fill="#059669"
+                      fillOpacity={0.25}
+                    />
+                    <Radar
+                      name="Git-History"
+                      dataKey="git_history"
+                      stroke="#d97706"
+                      fill="#d97706"
+                      fillOpacity={0.3}
+                    />
+                    <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }} />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
 
-            <div className="overflow-x-auto rounded-lg border border-slate-200 shadow-2xs">
-              <table className="w-full text-left text-xs font-mono">
-                <thead className="bg-slate-100 text-slate-700 uppercase text-[10px] font-bold">
-                  <tr>
-                    <th className="p-2.5">Arm Condition</th>
-                    <th className="p-2.5">Quality Score</th>
-                    <th className="p-2.5">BLEU</th>
-                    <th className="p-2.5">ROUGE-L</th>
-                    <th className="p-2.5">Semantic Sim</th>
-                    <th className="p-2.5">Factuality</th>
-                    <th className="p-2.5">Input Tokens</th>
-                    <th className="p-2.5">Output Tokens</th>
-                    <th className="p-2.5">Compliance</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200 bg-white">
-                  {(['code_only', 'few_shot_control', 'call_graph', 'git_history'] as ContextCondition[]).map((cond) => {
-                    const res = results[cond];
-                    const evalRes = res?.evaluation;
-                    const qualScore = evalRes?.overallQuality ?? 0;
-                    return (
-                      <tr key={cond} className="hover:bg-slate-50">
-                        <td className="p-2.5 font-sans font-bold text-slate-900">
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] ${
-                              cond === 'code_only'
-                                ? 'bg-slate-100 text-slate-800'
-                                : cond === 'few_shot_control'
-                                ? 'bg-indigo-100 text-indigo-900'
-                                : cond === 'call_graph'
-                                ? 'bg-emerald-100 text-emerald-900'
-                                : 'bg-amber-100 text-amber-900'
-                            }`}
-                          >
-                            {res?.title || cond}
-                          </span>
-                        </td>
-                        <td className="p-2.5 font-bold text-slate-900 text-sm">
-                          {qualScore > 0 ? qualScore : '--'}{' '}
-                          <span className="text-[10px] font-normal text-slate-500">/ 100</span>
-                        </td>
-                        <td className="p-2.5 text-slate-700">
-                          {evalRes?.bleuScore !== undefined ? evalRes.bleuScore.toFixed(3) : '--'}
-                        </td>
-                        <td className="p-2.5 text-slate-700">
-                          {evalRes?.rougeL !== undefined ? evalRes.rougeL.toFixed(3) : '--'}
-                        </td>
-                        <td className="p-2.5 text-indigo-700 font-bold">
-                          {evalRes?.semanticSimilarity !== undefined ? evalRes.semanticSimilarity.toFixed(2) : '--'}
-                        </td>
-                        <td className="p-2.5 text-emerald-700 font-bold">
-                          {evalRes?.factualityScore !== undefined ? `${evalRes.factualityScore}%` : '--'}
-                        </td>
-                        <td className="p-2.5 text-slate-600">
-                          {res?.actualInputTokens || res?.promptPayload?.exactPromptTokens || '--'}t
-                        </td>
-                        <td className="p-2.5 text-slate-600">
-                          {res?.outputTokens || '--'}t
-                        </td>
-                        <td className="p-2.5">
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                            {res?.tokens?.compliancePercentage ?? 100}%
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            {/* Chart 2: Overall Score Bar Chart */}
+            <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
+                  <BarChart3 className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Composite Quality Score vs Fixed Token Budget</span>
+                </span>
+              </div>
+
+              <div className="h-64 w-full text-xs">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={barData} margin={{ top: 20, right: 20, left: -10, bottom: 20 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                    <XAxis dataKey="name" tick={{ fill: '#334155', fontSize: 11, fontWeight: 500 }} />
+                    <YAxis domain={[0, 100]} tick={{ fill: '#64748b', fontSize: 11 }} />
+                    <Tooltip
+                      formatter={(val: any) => [`${val} / 100`, 'Quality Score']}
+                      contentStyle={{ borderRadius: '8px', fontSize: '12px', borderColor: '#cbd5e1' }}
+                    />
+                    <Bar dataKey="score" radius={[6, 6, 0, 0]}>
+                      {barData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.color} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
-          </div>
-
-          {/* Interactive Multi-Tab Visual Charts */}
-          <div className="space-y-3 pt-2">
-            <div className="flex items-center justify-between flex-wrap gap-2 border-b border-slate-200 pb-2">
-              <div className="flex items-center space-x-1 font-mono text-xs">
-                <button
-                  type="button"
-                  onClick={() => setActiveChartTab('radar')}
-                  className={`px-3 py-1.5 rounded-md font-bold transition-all cursor-pointer ${
-                    activeChartTab === 'radar'
-                      ? 'bg-indigo-900 text-white'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                  }`}
-                >
-                  Radar Profile
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveChartTab('bar_ci')}
-                  className={`px-3 py-1.5 rounded-md font-bold transition-all cursor-pointer ${
-                    activeChartTab === 'bar_ci'
-                      ? 'bg-indigo-900 text-white'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                  }`}
-                >
-                  Quality Scores
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveChartTab('token_compliance')}
-                  className={`px-3 py-1.5 rounded-md font-bold transition-all cursor-pointer ${
-                    activeChartTab === 'token_compliance'
-                      ? 'bg-indigo-900 text-white'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                  }`}
-                >
-                  Token Compliance
-                </button>
-              </div>
-
-              <span className="text-[11px] font-mono text-slate-500">
-                Target: {experimentRun.targetName} | Fixed Budget: {experimentRun.tokenBudget}t
-              </span>
-            </div>
-
-            {/* Tab 1: Radar Chart */}
-            {activeChartTab === 'radar' && (
-              <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
-                    <PieChart className="w-3.5 h-3.5 text-indigo-600" />
-                    <span>Multi-Dimensional Criterion Radar Profile (0-100)</span>
-                  </span>
-                </div>
-
-                <div className="h-72 w-full text-xs">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <RadarChart data={radarData} outerRadius="75%">
-                      <PolarGrid stroke="#cbd5e1" />
-                      <PolarAngleAxis dataKey="metric" tick={{ fill: '#334155', fontSize: 11, fontWeight: 600 }} />
-                      <PolarRadiusAxis angle={30} domain={[0, 100]} stroke="#94a3b8" />
-                      <Radar
-                        name="Code Only (Floor)"
-                        dataKey="code_only"
-                        stroke="#64748b"
-                        fill="#64748b"
-                        fillOpacity={0.15}
-                      />
-                      <Radar
-                        name="Few-Shot Control"
-                        dataKey="few_shot_control"
-                        stroke="#4f46e5"
-                        fill="#4f46e5"
-                        fillOpacity={0.2}
-                      />
-                      <Radar
-                        name="Call-Graph"
-                        dataKey="call_graph"
-                        stroke="#059669"
-                        fill="#059669"
-                        fillOpacity={0.25}
-                      />
-                      <Radar
-                        name="Git-History"
-                        dataKey="git_history"
-                        stroke="#d97706"
-                        fill="#d97706"
-                        fillOpacity={0.3}
-                      />
-                      <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }} />
-                    </RadarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            )}
-
-            {/* Tab 2: Quality Score Bar Chart */}
-            {activeChartTab === 'bar_ci' && (
-              <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
-                    <BarChart3 className="w-3.5 h-3.5 text-indigo-600" />
-                    <span>Overall Composite Quality Score (4 Arms)</span>
-                  </span>
-                </div>
-
-                <div className="h-72 w-full text-xs">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={barData} margin={{ top: 25, right: 25, left: -10, bottom: 20 }}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                      <XAxis dataKey="name" tick={{ fill: '#334155', fontSize: 11, fontWeight: 600 }} />
-                      <YAxis domain={[0, 100]} tick={{ fill: '#64748b', fontSize: 11 }} />
-                      <Tooltip
-                        formatter={(val: any, _name: any, item: any) => [
-                          `${val} / 100 (${item.payload.role})`,
-                          'Quality Score',
-                        ]}
-                        contentStyle={{ borderRadius: '8px', fontSize: '12px', borderColor: '#cbd5e1' }}
-                      />
-                      <Bar dataKey="score" radius={[6, 6, 0, 0]}>
-                        {barData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            )}
-
-            {/* Tab 3: Token Budget Compliance */}
-            {activeChartTab === 'token_compliance' && (
-              <div className="p-4 rounded-xl bg-slate-50/80 border border-slate-200 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
-                    <Coins className="w-3.5 h-3.5 text-indigo-600" />
-                    <span>Token Budget Allocation & Strict Compliance (Actual vs Requested)</span>
-                  </span>
-                </div>
-
-                <div className="overflow-x-auto rounded-lg border border-slate-200">
-                  <table className="w-full text-left text-xs font-mono">
-                    <thead className="bg-slate-100 text-slate-700 uppercase text-[10px] font-bold">
-                      <tr>
-                        <th className="p-2.5">Arm</th>
-                        <th className="p-2.5">Requested Budget</th>
-                        <th className="p-2.5">Actual Input Tokens</th>
-                        <th className="p-2.5">Output Tokens</th>
-                        <th className="p-2.5">Token Difference</th>
-                        <th className="p-2.5">Compliance %</th>
-                        <th className="p-2.5">Counting Method</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200 bg-white">
-                      {tokenComplianceData.map((d, i) => {
-                        const diff = d.actualInput - d.requested;
-                        return (
-                          <tr key={i} className="hover:bg-slate-50">
-                            <td className="p-2.5 font-sans font-bold">{d.arm}</td>
-                            <td className="p-2.5">{d.requested}t</td>
-                            <td className="p-2.5 font-bold text-indigo-900">{d.actualInput}t</td>
-                            <td className="p-2.5 text-slate-600">{d.outputTokens}t</td>
-                            <td className="p-2.5">
-                              <span className={diff === 0 ? 'text-slate-600' : diff > 0 ? 'text-amber-700 font-bold' : 'text-emerald-700 font-bold'}>
-                                {diff >= 0 ? `+${diff}` : diff}t
-                              </span>
-                            </td>
-                            <td className="p-2.5">
-                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                                {d.compliancePct}%
-                              </span>
-                            </td>
-                            <td className="p-2.5">
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-mono">
-                                ACTUAL (Gemini API)
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* History table if runs exist */}
@@ -509,7 +289,7 @@ export const EvaluationDashboard: React.FC<EvaluationDashboardProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
                   <Layers className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Session Benchmark History ({allRuns.length} runs recorded):</span>
+                  <span>Session Trial History ({allRuns.length} runs recorded):</span>
                 </span>
                 <button
                   type="button"
